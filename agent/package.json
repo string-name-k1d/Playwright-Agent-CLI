@@ -1,0 +1,33 @@
+{
+  "name": "pw-cli-agent",
+  "version": "1.0.0",
+  "description": "Playwright CLI + OpenCode agent for automated web testing (explore > plan > test > report)",
+  "type": "module",
+  "bin": {
+    "pw-cli-agent": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "check": "node dist/index.js check",
+    "explore": "node dist/index.js explore",
+    "plan": "node dist/index.js plan",
+    "test": "node dist/index.js test",
+    "report": "node dist/index.js report",
+    "skill": "node dist/index.js skill"
+  },
+  "keywords": ["playwright", "testing", "opencode", "e2e", "cli"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@playwright/test": "^1.40.0",
+    "chalk": "^4.1.2",
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

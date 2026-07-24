@@ -1,0 +1,9 @@
+node_modules
+dist
+*.md
+.env
+.env.*
+.bash_aliases
+docker-compose.yml
+test_command.sh
+shared
