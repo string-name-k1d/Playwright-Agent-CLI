@@ -11,6 +11,8 @@ export interface PlanOptions {
   url?: string;
   model?: string;
   output?: string;
+  prompt?: string;
+  promptFile?: string;
   config: Config;
 }
 
@@ -44,14 +46,23 @@ export async function planCommand(opts: PlanOptions): Promise<void> {
 
   console.log(chalk.cyan('\nGenerating test plan via opencode...\n'));
 
-  const prompt = plannerPrompt(snapshotContent);
+  let requirements: string | undefined;
+  if (opts.prompt) {
+    requirements = opts.prompt;
+    console.log(chalk.gray(`Using inline prompt: "${opts.prompt.slice(0, 80)}${opts.prompt.length > 80 ? '...' : ''}"`));
+  } else if (opts.promptFile) {
+    console.log(chalk.gray(`Reading requirements from: ${opts.promptFile}`));
+    requirements = readFileSync(opts.promptFile, 'utf-8');
+  }
+
+  const prompt = plannerPrompt(snapshotContent, undefined, requirements);
   const result = await opencodeRun(prompt, {
     model: opts.model ?? opts.config.opencodeModel,
-    timeout: 120000,
+    timeout: 300000,
   });
 
   if (result.exitCode !== 0) {
-    console.error(chalk.red(`OpenCode failed: ${result.output || 'unknown error'}`));
+    console.error(chalk.red(`OpenCode failed (exit ${result.exitCode}): ${result.output || 'no stdout'}`));
     process.exit(1);
   }
 

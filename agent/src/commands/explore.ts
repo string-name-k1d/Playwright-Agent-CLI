@@ -2,6 +2,8 @@ import chalk from 'chalk';
 import { pwOpen, pwSnapshot, pwScreenshot, pwClose, parseSnapshotPageInfo } from '../lib/pw-cli.js';
 import { saveSnapshot, ensureArtifactsDir } from '../lib/artifacts.js';
 import { Config } from '../config.js';
+import { readdirSync, copyFileSync, statSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 
 export interface ExploreOptions {
   url: string;
@@ -45,7 +47,34 @@ export async function exploreCommand(opts: ExploreOptions): Promise<void> {
   if (pageInfo.url) console.log(chalk.gray(`  URL: ${pageInfo.url}`));
   if (pageInfo.title) console.log(chalk.gray(`  Title: ${pageInfo.title}`));
 
-  saveSnapshot(snapResult.stdout, snapFilename, opts.config.outputDir);
+  // Copy the actual YAML snapshot from .playwright-cli/ to artifacts
+  const pwCliDir = join(process.cwd(), '.playwright-cli');
+  try {
+    const ymlFiles = readdirSync(pwCliDir)
+      .filter(f => f.endsWith('.yml') && f.startsWith('page-'))
+      .map(f => ({
+        name: f,
+        time: statSync(join(pwCliDir, f)).mtimeMs,
+      }))
+      .sort((a, b) => b.time - a.time);
+
+    if (ymlFiles.length > 0) {
+      const latestYml = join(pwCliDir, ymlFiles[0].name);
+      const destPath = join(opts.config.outputDir, 'explore', snapFilename);
+      copyFileSync(latestYml, destPath);
+    }
+  } catch {
+    // Fall back to saving stdout summary
+    saveSnapshot(snapResult.stdout, snapFilename, opts.config.outputDir);
+  }
+
+  // Clean up stale YAML files left in CWD by playwright-cli
+  const staleYamlPattern = /^explore-\d+\.yaml$/;
+  for (const f of readdirSync(process.cwd())) {
+    if (staleYamlPattern.test(f)) {
+      try { unlinkSync(join(process.cwd(), f)); } catch {}
+    }
+  }
 
   if (opts.screenshot) {
     const imgFilename = `explore-${Date.now()}.png`;

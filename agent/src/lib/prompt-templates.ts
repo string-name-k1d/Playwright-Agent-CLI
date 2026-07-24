@@ -22,9 +22,13 @@ Respond in markdown format with a numbered list of testable flows.`;
 
 export function plannerPrompt(
   snapshotContent: string,
-  context?: string
+  context?: string,
+  requirements?: string
 ): string {
   const contextSection = context ? `\n\nADDITIONAL CONTEXT:\n${context}` : '';
+  const requirementsSection = requirements
+    ? `\n\nREQUIREMENTS / TARGETS TO TEST:\n${requirements}\n\nFocus your test plan on the above requirements. Cover each requirement with at least one test case.`
+    : '';
 
   return `You are a Playwright test planner. Given an accessibility snapshot of a web page, create a structured test plan.
 
@@ -43,6 +47,7 @@ Use Playwright-compatible assertions where possible (e.g. toHaveURL, toHaveText,
 SNAPSHOT:
 ${snapshotContent}
 ${contextSection}
+${requirementsSection}
 
 Respond in markdown with a structured test plan. Use proper markdown headings and code blocks for Playwright code snippets.`;
 }

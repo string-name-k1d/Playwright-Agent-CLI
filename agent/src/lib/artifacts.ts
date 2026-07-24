@@ -1,7 +1,7 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-const SUBDIRS = ['explore', 'plans', 'tests', 'reports'] as const;
+const SUBDIRS = ['explore', 'plans', 'tests', 'reports', 'results'] as const;
 
 export function ensureArtifactsDir(baseDir: string = './artifacts'): void {
   for (const sub of SUBDIRS) {
@@ -84,4 +84,75 @@ export function listArtifacts(subdir: string, baseDir: string = './artifacts'): 
   const dir = join(baseDir, subdir);
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((f) => !f.startsWith('.'));
+}
+
+export interface ExtractedCode {
+  filename: string;
+  code: string;
+}
+
+function wrapInTest(code: string, testName: string): string {
+  const hasImport = /import.*@playwright\/test/.test(code);
+  const hasTest = /\b(?:test|it)\s*\(/.test(code);
+
+  if (hasImport && hasTest) return code;
+
+  const importLine = hasImport ? '' : "import { test, expect } from '@playwright/test';\n\n";
+  const testBlock = hasTest ? code : `test('${testName.replace(/'/g, "\\'")}', async ({ page }) => {\n${code}\n});`;
+
+  return importLine + testBlock;
+}
+
+export function extractCodeBlocks(markdown: string): ExtractedCode[] {
+  const blocks: ExtractedCode[] = [];
+  const lines = markdown.split('\n');
+  const regex = /```(?:ts|typescript|javascript|js|playwright-test)?\s*\n([\s\S]*?)```/g;
+  let match;
+  let blockIndex = 0;
+
+  while ((match = regex.exec(markdown)) !== null) {
+    const code = match[1].trim();
+    if (!code) continue;
+
+    const hasTest = /\b(?:test|it)\s*\(/.test(code);
+    const hasImport = /import.*@playwright\/test/.test(code);
+    const hasExpect = /\bexpect\s*\(/.test(code);
+
+    if (hasTest || hasImport || hasExpect) {
+      // Find the nearest heading before this code block for the test name
+      const beforeMatch = markdown.substring(0, match.index);
+      const beforeLines = beforeMatch.split('\n');
+      let testName = `test-${blockIndex}`;
+      for (let i = beforeLines.length - 1; i >= 0; i--) {
+        const line = beforeLines[i];
+        if (/^#{1,4}\s+/.test(line)) {
+          testName = line.replace(/^#{1,4}\s+/, '').trim();
+          break;
+        }
+      }
+
+      const wrappedCode = wrapInTest(code, testName);
+      const filename = `test-${blockIndex}.spec.ts`;
+      blocks.push({ filename, code: wrappedCode });
+      blockIndex++;
+    }
+  }
+
+  return blocks;
+}
+
+export function saveExtractedTests(
+  blocks: ExtractedCode[],
+  baseDir: string = './artifacts'
+): string[] {
+  ensureArtifactsDir(baseDir);
+  const saved: string[] = [];
+
+  for (const block of blocks) {
+    const filePath = join(baseDir, 'tests', block.filename);
+    writeFileSync(filePath, block.code, 'utf-8');
+    saved.push(filePath);
+  }
+
+  return saved;
 }

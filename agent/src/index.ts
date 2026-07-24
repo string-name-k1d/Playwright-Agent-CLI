@@ -6,6 +6,7 @@ import { planCommand } from './commands/plan.js';
 import { testCommand } from './commands/test.js';
 import { reportCommand } from './commands/report.js';
 import { skillCommand } from './commands/skill.js';
+import { replCommand } from './commands/repl.js';
 
 const program = new Command();
 
@@ -56,6 +57,8 @@ program
   .option('--url <url>', 'Auto-explore if no snapshot provided (falls back to TARGET_URL)')
   .option('--model <model>', 'OpenCode model override')
   .option('--output <file>', 'Custom output path')
+  .option('--prompt <text>', 'Natural language requirements for the test plan')
+  .option('--prompt-file <file>', 'Markdown file containing requirements/targets to test')
   .action(async (opts) => {
     const parent = program.opts();
     const config = resolveConfig({ opencodeModel: opts.model }, parent.config);
@@ -64,6 +67,8 @@ program
       url: opts.url ?? config.targetUrl,
       model: opts.model,
       output: opts.output,
+      prompt: opts.prompt,
+      promptFile: opts.promptFile,
       config,
     });
   });
@@ -75,6 +80,7 @@ program
   .option('--plan <file>', 'Generate tests from plan file')
   .option('--generate', 'Launch interactive playwright codegen')
   .option('--execute <file>', 'Execute existing test file')
+  .option('--extract', 'Extract test code directly from plan (skip opencode generation)')
   .option('--headed', 'Show browser window')
   .option('--retries <N>', 'Self-heal retry count', parseInt)
   .action(async (opts) => {
@@ -85,6 +91,7 @@ program
       plan: opts.plan,
       generate: opts.generate,
       execute: opts.execute,
+      extract: opts.extract,
       headed: opts.headed,
       retries: opts.retries,
       config,
@@ -116,6 +123,14 @@ program
       outputDir: opts.outputDir,
       agents: opts.agents,
     });
+  });
+
+program
+  .command('repl')
+  .description('Start interactive REPL session')
+  .action(async () => {
+    const parent = program.opts();
+    await replCommand(parent.config);
   });
 
 program.parseAsync(process.argv).catch((err) => {

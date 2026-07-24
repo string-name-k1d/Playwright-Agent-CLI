@@ -16,7 +16,7 @@ export interface OpenCodeResult {
   exitCode: number;
 }
 
-const DEFAULT_TIMEOUT = 120000;
+const DEFAULT_TIMEOUT = 300000;
 
 function getServerUrl(): string | null {
   return process.env.OPENCODE_SERVER_URL ?? null;
@@ -116,11 +116,9 @@ async function opencodeViaCli(
 ): Promise<OpenCodeResult> {
   const args: string[] = ['run'];
 
-  if (opts.quiet !== false) args.push('-q');
-  args.push('-f', 'json');
+  args.push('--format', 'json');
   if (opts.model) args.push('-m', opts.model);
   if (opts.session) args.push('-s', opts.session);
-  args.push(prompt);
 
   return new Promise((resolve) => {
     const child = spawn('opencode', args, {
@@ -128,6 +126,9 @@ async function opencodeViaCli(
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },
     } as SpawnOptions);
+
+    child.stdin?.write(prompt);
+    child.stdin?.end();
 
     let stdout = '';
     let stderr = '';
@@ -151,6 +152,7 @@ async function opencodeViaCli(
     child.on('close', (code) => {
       clearTimeout(timer);
       const output = stdout.trim();
+      const errOutput = stderr.trim();
       let structured: any;
       try {
         structured = JSON.parse(output);
@@ -158,7 +160,7 @@ async function opencodeViaCli(
         structured = undefined;
       }
       resolve({
-        output,
+        output: code !== 0 && !output && errOutput ? errOutput : output,
         structured,
         exitCode: code ?? 1,
       });
@@ -216,6 +218,23 @@ export function extractStructuredOutput(result: OpenCodeResult): any {
   }
   if (result.structured?.output) {
     return result.structured.output;
+  }
+  // opencode --format json outputs one JSON event per line
+  // Extract text content from type:"text" events
+  const lines = result.output.split('\n').filter(l => l.trim());
+  const textParts: string[] = [];
+  for (const line of lines) {
+    try {
+      const event = JSON.parse(line);
+      if (event.type === 'text' && event.part?.text) {
+        textParts.push(event.part.text);
+      }
+    } catch {
+      // Not JSON or unparseable — include as-is
+    }
+  }
+  if (textParts.length > 0) {
+    return textParts.join('\n');
   }
   return result.output;
 }
