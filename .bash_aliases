@@ -1,2 +1,2 @@
-alis pwcli='node dist/index.js'
-alis pw-cli='node dist/index.js'
+alias pwcli='node dist/index.js'
+alias pw-cli='node dist/index.js'

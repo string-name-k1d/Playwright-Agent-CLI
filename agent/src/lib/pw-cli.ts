@@ -16,7 +16,7 @@ export interface PwCliOptions {
   cliPath?: string;
 }
 
-const DEFAULT_TIMEOUT = 30000;
+const DEFAULT_TIMEOUT = 60000;
 
 function buildArgs(command: string, args: string[], opts: PwCliOptions): string[] {
   const result: string[] = [];
@@ -51,12 +51,14 @@ export async function pwExec(
 
 export async function pwOpen(
   url: string,
-  opts: { headed?: boolean; browser?: string; session?: string; cliPath?: string } = {}
+  opts: { headed?: boolean; browser?: string; session?: string; cliPath?: string; profile?: string; persistent?: boolean } = {}
 ): Promise<PwCliResult> {
   const args: string[] = [];
   if (opts.headed) args.push('--headed');
   // Default to chromium — the Playwright Docker image ships Chromium, not Chrome
   args.push(`--browser=${opts.browser ?? 'chromium'}`);
+  if (opts.profile) args.push('--profile', opts.profile);
+  if (opts.persistent) args.push('--persistent');
   if (url) args.push(url);
   return pwExec('open', args, { session: opts.session, cliPath: opts.cliPath });
 }

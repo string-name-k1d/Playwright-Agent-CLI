@@ -1,12 +1,16 @@
 import { Command } from 'commander';
-import { resolveConfig } from './config.js';
+import { resolveConfig, resolveProfile } from './config.js';
 import { checkCommand } from './commands/check.js';
 import { exploreCommand } from './commands/explore.js';
 import { planCommand } from './commands/plan.js';
 import { testCommand } from './commands/test.js';
+import { generateCommand } from './commands/generate.js';
 import { reportCommand } from './commands/report.js';
 import { skillCommand } from './commands/skill.js';
 import { replCommand } from './commands/repl.js';
+import { autorunCommand } from './commands/autorun.js';
+import { healCommand } from './commands/heal.js';
+import { loginCommand } from './commands/login.js';
 
 const program = new Command();
 
@@ -20,10 +24,35 @@ program
   .command('check')
   .description('Verify environment and connectivity')
   .option('--url <url>', 'Also verify site connectivity')
+  .option('--screenshot', 'Capture a screenshot of the reached site')
+  .option('--profile <path>', 'Persistent browser profile for saved login state')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({}, parent.config);
-    await checkCommand({ url: opts.url ?? config.targetUrl });
+    const config = resolveConfig({ storageState: opts.profile }, parent.config);
+    await checkCommand({ url: opts.url ?? config.targetUrl, screenshot: opts.screenshot, profile: opts.profile, config });
+  });
+
+program
+  .command('login')
+  .description('Log in via Drush one-time login link and save browser profile')
+  .option('--url <url>', 'Target URL (falls back to TARGET_URL env / config)')
+  .option('--user <user>', 'Drupal username to generate ULI for (default: admin)')
+  .option('--uli <url>', 'Direct one-time login URL (skips drush generation)')
+  .option('--drush-cmd <cmd>', 'Drush command prefix', 'docker exec mtpc_test drush')
+  .option('--headed', 'Show browser window')
+  .option('--profile <path>', 'Browser profile directory to save (default: ./auth-profile)')
+  .action(async (opts) => {
+    const parent = program.opts();
+    const config = resolveConfig({ headed: opts.headed, storageState: opts.profile }, parent.config);
+    await loginCommand({
+      url: opts.url ?? config.targetUrl,
+      user: opts.user ?? 'admin',
+      uli: opts.uli,
+      drushCmd: opts.drushCmd,
+      headed: opts.headed,
+      profile: opts.profile ?? './auth-profile',
+      config,
+    });
   });
 
 program
@@ -33,9 +62,10 @@ program
   .option('--depth <N>', 'Snapshot tree depth', parseInt)
   .option('--screenshot', 'Also capture a PNG screenshot')
   .option('--headed', 'Show browser window')
+  .option('--profile <path>', 'Persistent browser profile for saved login state')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({ headed: opts.headed }, parent.config);
+    const config = resolveConfig({ headed: opts.headed, storageState: opts.profile }, parent.config);
     const url = opts.url ?? config.targetUrl;
     if (!url) {
       console.error('Error: --url is required (or set TARGET_URL in .env)');
@@ -46,6 +76,7 @@ program
       depth: opts.depth,
       screenshot: opts.screenshot,
       headed: opts.headed,
+      profile: opts.profile,
       config,
     });
   });
@@ -59,6 +90,8 @@ program
   .option('--output <file>', 'Custom output path')
   .option('--prompt <text>', 'Natural language requirements for the test plan')
   .option('--prompt-file <file>', 'Markdown file containing requirements/targets to test')
+  .option('--search <query>', 'Search explore registry for matching records')
+  .option('--explore', 'Also explore unvisited pages found in links')
   .action(async (opts) => {
     const parent = program.opts();
     const config = resolveConfig({ opencodeModel: opts.model }, parent.config);
@@ -69,31 +102,52 @@ program
       output: opts.output,
       prompt: opts.prompt,
       promptFile: opts.promptFile,
+      search: opts.search,
+      explore: opts.explore,
       config,
     });
   });
 
 program
   .command('test')
-  .description('Generate or execute Playwright tests')
+  .description('Execute Playwright test files')
   .option('--url <url>', 'Target URL (falls back to TARGET_URL env / config)')
-  .option('--plan <file>', 'Generate tests from plan file')
-  .option('--generate', 'Launch interactive playwright codegen')
   .option('--execute <file>', 'Execute existing test file')
-  .option('--extract', 'Extract test code directly from plan (skip opencode generation)')
   .option('--headed', 'Show browser window')
   .option('--retries <N>', 'Self-heal retry count', parseInt)
+  .option('--profile <path>', 'Browser profile for auth state (auto-detects ./auth-profile)')
   .action(async (opts) => {
     const parent = program.opts();
     const config = resolveConfig({ headed: opts.headed }, parent.config);
-    await testCommand({
-      url: opts.url ?? config.targetUrl,
-      plan: opts.plan,
-      generate: opts.generate,
+    const profile = resolveProfile(opts.profile, config);
+    const result = await testCommand({
       execute: opts.execute,
-      extract: opts.extract,
       headed: opts.headed,
       retries: opts.retries,
+      url: opts.url ?? config.targetUrl,
+      storageState: profile,
+      config,
+    });
+    process.exit(result.passed ? 0 : 1);
+  });
+
+program
+  .command('generate')
+  .description('Generate Playwright test files from plans')
+  .option('--url <url>', 'Target URL (falls back to TARGET_URL env / config)')
+  .option('--plan <file>', 'Generate tests from plan file')
+  .option('--extract', 'Extract test code directly from plan (skip opencode generation)')
+  .option('--codegen', 'Launch interactive playwright codegen')
+  .option('--headed', 'Show browser window')
+  .action(async (opts) => {
+    const parent = program.opts();
+    const config = resolveConfig({ headed: opts.headed }, parent.config);
+    await generateCommand({
+      url: opts.url ?? config.targetUrl,
+      plan: opts.plan,
+      codegen: opts.codegen,
+      extract: opts.extract,
+      headed: opts.headed,
       config,
     });
   });
@@ -131,6 +185,55 @@ program
   .action(async () => {
     const parent = program.opts();
     await replCommand(parent.config);
+  });
+
+program
+  .command('autorun')
+  .description('Run loop: explore → plan → generate → test → heal → plan → ...')
+  .option('--url <url>', 'Target URL (falls back to TARGET_URL env / config)')
+  .option('--headed', 'Show browser window')
+  .option('--prompt <text>', 'Natural language requirements for the test plan')
+  .option('--prompt-file <file>', 'Markdown file containing requirements/targets to test')
+  .option('--max-iterations <N>', 'Maximum plan→generate→test→heal loops', parseInt)
+  .option('--resume <runId>', 'Resume a previous interrupted autorun')
+  .option('--profile <path>', 'Persistent browser profile for saved login state')
+  .action(async (opts) => {
+    const parent = program.opts();
+    const config = resolveConfig({ headed: opts.headed, storageState: opts.profile }, parent.config);
+    const url = opts.url ?? config.targetUrl;
+    if (!url && !opts.resume) {
+      console.error('Error: --url is required (or set TARGET_URL in .env)');
+      process.exit(1);
+    }
+    await autorunCommand({
+      url: url ?? '',
+      headed: opts.headed,
+      prompt: opts.prompt,
+      promptFile: opts.promptFile,
+      maxIterations: opts.maxIterations,
+      resume: opts.resume,
+      profile: opts.profile,
+      config,
+    });
+  });
+
+program
+  .command('heal')
+  .description('Re-explore failing pages and generate a corrected test plan')
+  .option('--url <url>', 'Target URL (falls back to TARGET_URL env / config)')
+  .option('--model <model>', 'OpenCode model override')
+  .option('--headed', 'Show browser window')
+  .option('--profile <path>', 'Persistent browser profile for saved login state')
+  .action(async (opts) => {
+    const parent = program.opts();
+    const config = resolveConfig({ headed: opts.headed, opencodeModel: opts.model, storageState: opts.profile }, parent.config);
+    await healCommand({
+      url: opts.url ?? config.targetUrl,
+      model: opts.model,
+      headed: opts.headed,
+      profile: opts.profile,
+      config,
+    });
   });
 
 program.parseAsync(process.argv).catch((err) => {

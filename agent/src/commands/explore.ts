@@ -1,26 +1,35 @@
 import chalk from 'chalk';
+import { existsSync, readdirSync, copyFileSync, statSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import { pwOpen, pwSnapshot, pwScreenshot, pwClose, parseSnapshotPageInfo } from '../lib/pw-cli.js';
 import { saveSnapshot, ensureArtifactsDir } from '../lib/artifacts.js';
-import { Config } from '../config.js';
-import { readdirSync, copyFileSync, statSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { registerExploreEntry, type ExploreEntry } from '../lib/explore-registry.js';
+import { Config, resolveProfile } from '../config.js';
 
 export interface ExploreOptions {
   url: string;
   depth?: number;
   screenshot?: boolean;
   headed?: boolean;
+  profile?: string;
   config: Config;
 }
 
-export async function exploreCommand(opts: ExploreOptions): Promise<void> {
+export interface ExploreResult {
+  entry: ExploreEntry;
+  snapshotPath: string;
+}
+
+export async function exploreCommand(opts: ExploreOptions): Promise<ExploreResult> {
   ensureArtifactsDir(opts.config.outputDir);
 
+  const profile = resolveProfile(opts.profile, opts.config);
   console.log(chalk.cyan(`\nOpening: ${opts.url}\n`));
 
   const openResult = await pwOpen(opts.url, {
     headed: opts.headed ?? opts.config.headed,
     cliPath: opts.config.playwrightCliPath,
+    profile,
   });
 
   if (openResult.exitCode !== 0) {
@@ -49,6 +58,7 @@ export async function exploreCommand(opts: ExploreOptions): Promise<void> {
 
   // Copy the actual YAML snapshot from .playwright-cli/ to artifacts
   const pwCliDir = join(process.cwd(), '.playwright-cli');
+  let destPath = join(opts.config.outputDir, 'explore', snapFilename);
   try {
     const ymlFiles = readdirSync(pwCliDir)
       .filter(f => f.endsWith('.yml') && f.startsWith('page-'))
@@ -60,13 +70,21 @@ export async function exploreCommand(opts: ExploreOptions): Promise<void> {
 
     if (ymlFiles.length > 0) {
       const latestYml = join(pwCliDir, ymlFiles[0].name);
-      const destPath = join(opts.config.outputDir, 'explore', snapFilename);
       copyFileSync(latestYml, destPath);
     }
   } catch {
-    // Fall back to saving stdout summary
     saveSnapshot(snapResult.stdout, snapFilename, opts.config.outputDir);
   }
+
+  // Register in explore registry
+  const entry = registerExploreEntry(
+    pageInfo.url ?? opts.url,
+    pageInfo.title ?? 'Untitled',
+    destPath,
+    snapFilename,
+    opts.config.outputDir
+  );
+  console.log(chalk.gray(`  Elements: ${entry.elementCount}, Links: ${entry.linkCount}`));
 
   // Clean up stale YAML files left in CWD by playwright-cli
   const staleYamlPattern = /^explore-\d+\.yaml$/;
@@ -90,4 +108,6 @@ export async function exploreCommand(opts: ExploreOptions): Promise<void> {
 
   await pwClose({ cliPath: opts.config.playwrightCliPath });
   console.log(chalk.green('\nExploration complete\n'));
+
+  return { entry, snapshotPath: destPath };
 }

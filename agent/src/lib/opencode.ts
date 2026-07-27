@@ -1,6 +1,9 @@
 import { spawn, type SpawnOptions } from 'node:child_process';
-import { get } from 'node:http';
-import { get as gets } from 'node:https';
+import { writeFileSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 
 export interface OpenCodeOptions {
   model?: string;
@@ -8,6 +11,7 @@ export interface OpenCodeOptions {
   quiet?: boolean;
   timeout?: number;
   cwd?: string;
+  retries?: number;
 }
 
 export interface OpenCodeResult {
@@ -29,7 +33,7 @@ async function httpPost(
 ): Promise<{ data: string; status: number }> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
-    const mod = parsed.protocol === 'https:' ? gets : get;
+    const mod = parsed.protocol === 'https:' ? httpsRequest : httpRequest;
 
     const req = mod(
       {
@@ -120,20 +124,30 @@ async function opencodeViaCli(
   if (opts.model) args.push('-m', opts.model);
   if (opts.session) args.push('-s', opts.session);
 
+  const LARGE_PROMPT_THRESHOLD = 8000;
+  let tmpFile: string | null = null;
+
+  if (prompt.length > LARGE_PROMPT_THRESHOLD) {
+    tmpFile = join(tmpdir(), `pw-prompt-${Date.now()}.txt`);
+    writeFileSync(tmpFile, prompt, 'utf-8');
+    args.push('Analyze the attached file and respond accordingly.');
+    args.push('--file', tmpFile);
+  } else {
+    args.push(prompt);
+  }
+
   return new Promise((resolve) => {
     const child = spawn('opencode', args, {
       cwd: opts.cwd ?? process.cwd(),
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env },
     } as SpawnOptions);
-
-    child.stdin?.write(prompt);
-    child.stdin?.end();
 
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
+      if (tmpFile) try { unlinkSync(tmpFile); } catch {}
       resolve({
         output: stdout.trim(),
         exitCode: 124,
@@ -151,6 +165,7 @@ async function opencodeViaCli(
 
     child.on('close', (code) => {
       clearTimeout(timer);
+      if (tmpFile) try { unlinkSync(tmpFile); } catch {}
       const output = stdout.trim();
       const errOutput = stderr.trim();
       let structured: any;
@@ -168,6 +183,7 @@ async function opencodeViaCli(
 
     child.on('error', () => {
       clearTimeout(timer);
+      if (tmpFile) try { unlinkSync(tmpFile); } catch {}
       resolve({
         output: '',
         exitCode: 1,
@@ -181,10 +197,45 @@ export async function opencodeRun(
   prompt: string,
   opts: OpenCodeOptions = {}
 ): Promise<OpenCodeResult> {
-  if (getServerUrl()) {
-    return opencodeViaServer(prompt, opts);
+  const maxRetries = opts.retries ?? 3;
+  const serverUrl = getServerUrl();
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    let result: OpenCodeResult;
+    if (serverUrl) {
+      result = await opencodeViaServer(prompt, opts);
+      // If server returned HTML (web UI) instead of JSON, fall back to CLI
+      if (result.exitCode !== 0 && result.output?.startsWith('<!doctype')) {
+        result = await opencodeViaCli(prompt, opts);
+      }
+    } else {
+      result = await opencodeViaCli(prompt, opts);
+    }
+
+    // Success or non-retryable error
+    if (result.exitCode === 0 || attempt === maxRetries) return result;
+
+    // Check if error is retryable (401, network errors, empty output)
+    const combined = result.output.toLowerCase();
+    const isRetryable =
+      combined.includes('401') ||
+      combined.includes('no provider available') ||
+      combined.includes('timed out') ||
+      combined.includes('econnrefused') ||
+      combined.includes('fetch failed') ||
+      combined.includes('econnreset') ||
+      combined.includes('socket hang up') ||
+      result.output.trim() === '';
+
+    if (!isRetryable) return result;
+
+    const delay = attempt * 2000;
+    console.error(`  OpenCode attempt ${attempt}/${maxRetries} failed, retrying in ${delay / 1000}s...`);
+    await new Promise(r => setTimeout(r, delay));
   }
-  return opencodeViaCli(prompt, opts);
+
+  // Should not reach here, but just in case
+  return { output: 'Max retries exceeded', exitCode: 1 };
 }
 
 export async function opencodeVersion(): Promise<{ available: boolean; version?: string; mode: string }> {
@@ -237,4 +288,22 @@ export function extractStructuredOutput(result: OpenCodeResult): any {
     return textParts.join('\n');
   }
   return result.output;
+}
+
+export function extractMarkdown(result: OpenCodeResult): string {
+  const raw = extractStructuredOutput(result);
+  if (typeof raw !== 'string') return JSON.stringify(raw, null, 2);
+
+  // Strip JSON log lines that leaked into the output
+  const lines = raw.split('\n');
+  const clean: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Skip JSON event lines (opencode format: {"type":"...","part":{...}})
+    if (trimmed.startsWith('{') && trimmed.includes('"type"') && trimmed.includes('"part"')) continue;
+    // Skip empty lines only if we haven't started content yet
+    clean.push(line);
+  }
+
+  return clean.join('\n').trim();
 }

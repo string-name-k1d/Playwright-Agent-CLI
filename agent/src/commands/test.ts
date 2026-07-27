@@ -1,27 +1,26 @@
 import chalk from 'chalk';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { opencodeRun, extractStructuredOutput } from '../lib/opencode.js';
-import { saveTest, ensureArtifactsDir, readArtifact, extractCodeBlocks, saveExtractedTests } from '../lib/artifacts.js';
-import { generatorPrompt, healerPrompt } from '../lib/prompt-templates.js';
+import { ensureArtifactsDir } from '../lib/artifacts.js';
+import { healerPrompt } from '../lib/prompt-templates.js';
 import { Config } from '../config.js';
 
 const execFileAsync = promisify(execFile);
 
 export interface TestOptions {
-  url?: string;
-  plan?: string;
-  generate?: boolean;
   execute?: string;
-  extract?: boolean;
   headed?: boolean;
   retries?: number;
+  snapshot?: string;
+  url?: string;
+  storageState?: string;
   config: Config;
 }
 
-interface TestResult {
+export interface TestResult {
   passed: boolean;
   output: string;
   reportDir?: string;
@@ -31,7 +30,7 @@ function timestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 }
 
-function saveTestResult(result: TestResult, testFile: string, outputDir: string): string {
+export function saveTestResult(result: TestResult, testFile: string, outputDir: string): string {
   const resultsDir = join(outputDir, 'results');
   if (!existsSync(resultsDir)) mkdirSync(resultsDir, { recursive: true });
 
@@ -39,16 +38,13 @@ function saveTestResult(result: TestResult, testFile: string, outputDir: string)
   const runDir = join(resultsDir, runId);
   mkdirSync(runDir, { recursive: true });
 
-  // Save full output
   writeFileSync(join(runDir, 'output.txt'), result.output, 'utf-8');
 
-  // Extract test results summary from output
   const passed = (result.output.match(/✓/g) ?? []).length;
   const failed = (result.output.match(/✘/g) ?? []).length;
   const failedTests = [...result.output.matchAll(/✘.*?›\s*(.*)/g)].map(m => m[1].trim());
   const passedTests = [...result.output.matchAll(/✓.*?›\s*(.*)/g)].map(m => m[1].trim());
 
-  // Copy playwright report from run/ directory
   let reportRelative = '';
   const playwrightReport = join(RUN_DIR, 'playwright-report');
   if (existsSync(playwrightReport)) {
@@ -58,16 +54,17 @@ function saveTestResult(result: TestResult, testFile: string, outputDir: string)
     reportRelative = `[HTML Report](playwright-report/index.html)`;
   }
 
-  // Copy test result artifacts from run/ directory
   const testResults = join(RUN_DIR, 'test-results');
   if (existsSync(testResults)) {
     copyDirectorySync(testResults, join(runDir, 'test-results'));
+
+    // Also copy screenshots to top-level screenshots/ in the run dir
+    const screenshotsDir = join(runDir, 'screenshots');
+    copyScreenshots(testResults, screenshotsDir);
   }
 
-  // Clean up run/ directory
   cleanupRunDir();
 
-  // Save concise summary
   const summary = [
     `# Test Run: ${runId}`,
     '',
@@ -97,6 +94,7 @@ function saveTestResult(result: TestResult, testFile: string, outputDir: string)
   summary.push(`- Test: \`${testFile}\``);
   summary.push(`- Output: \`output.txt\``);
   if (reportRelative) summary.push(`- ${reportRelative}`);
+  summary.push(`- Screenshots: \`screenshots/\``);
   summary.push('');
 
   writeFileSync(join(runDir, 'summary.md'), summary.join('\n'), 'utf-8');
@@ -118,25 +116,104 @@ function copyDirectorySync(src: string, dest: string): void {
   }
 }
 
-const RUN_DIR = join(process.cwd(), 'run');
+function copyScreenshots(testResultsDir: string, destDir: string): void {
+  if (!existsSync(testResultsDir)) return;
+  mkdirSync(destDir, { recursive: true });
+  const entries = readdirSync(testResultsDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const screenshotsDir = join(testResultsDir, entry.name, 'screenshots');
+    if (!existsSync(screenshotsDir)) continue;
+    const files = readdirSync(screenshotsDir).filter(f => f.endsWith('.png'));
+    for (const f of files) {
+      copyFileSync(join(screenshotsDir, f), join(destDir, f));
+    }
+  }
+}
 
-function cleanupRunDir(): void {
+export const RUN_DIR = join(process.cwd(), 'run');
+const PLAYWRIGHT_CONFIG = join(process.cwd(), 'playwright.config.ts');
+
+function ensurePlaywrightConfig(targetUrl?: string, storageState?: string): void {
+  const useOptions: Record<string, unknown> = {
+    actionTimeout: 30000,
+    navigationTimeout: 60000,
+  };
+
+  // Resolve targetUrl: explicit param → existing config → default
+  const resolvedUrl = targetUrl || (() => {
+    if (existsSync(PLAYWRIGHT_CONFIG)) {
+      try {
+        const content = readFileSync(PLAYWRIGHT_CONFIG, 'utf-8');
+        const match = content.match(/baseURL:\s*["']([^"']+)["']/);
+        if (match) return match[1];
+      } catch {}
+    }
+    return 'http://mtpc_test';
+  })();
+  useOptions.baseURL = resolvedUrl;
+
+  if (storageState) {
+    const absPath = storageState.startsWith('/') ? storageState : join(process.cwd(), storageState);
+    if (existsSync(absPath)) {
+      // If it's a directory (Chromium profile), look for state.json inside
+      let stateFile = absPath;
+      try {
+        if (statSync(absPath).isDirectory()) {
+          const candidate = join(absPath, 'state.json');
+          if (existsSync(candidate)) {
+            stateFile = candidate;
+          } else {
+            console.log(chalk.yellow(`  ⚠ Profile is a directory but no state.json found inside: ${absPath}`));
+            console.log(chalk.gray('    Run `login` again to export storageState'));
+          }
+        }
+      } catch {}
+      if (existsSync(stateFile)) {
+        useOptions.storageState = stateFile;
+      }
+    }
+  }
+
+  const lines = [
+    "import { defineConfig } from '@playwright/test';",
+    'export default defineConfig({',
+    '  use: {',
+  ];
+  for (const [key, value] of Object.entries(useOptions)) {
+    if (typeof value === 'string') {
+      lines.push(`    ${key}: ${JSON.stringify(value)},`);
+    } else {
+      lines.push(`    ${key}: ${value},`);
+    }
+  }
+  lines.push('  },');
+  lines.push('  timeout: 60000,');
+  lines.push('});');
+  lines.push('');
+
+  writeFileSync(PLAYWRIGHT_CONFIG, lines.join('\n'), 'utf-8');
+  console.log(chalk.gray(`  Config: playwright.config.ts (baseURL=${resolvedUrl}${storageState ? ', storageState set' : ''})`));
+}
+
+export function cleanupRunDir(): void {
   if (existsSync(RUN_DIR)) {
     rmSync(RUN_DIR, { recursive: true, force: true });
   }
 }
 
-async function runPlaywrightTest(file: string, headed: boolean): Promise<TestResult> {
-  // Clean previous run artifacts from CWD
+export async function runPlaywrightTest(file: string, headed: boolean, targetUrl?: string, storageState?: string): Promise<TestResult> {
   cleanupRunDir();
   mkdirSync(RUN_DIR, { recursive: true });
+
+  ensurePlaywrightConfig(targetUrl, storageState);
 
   const args = ['playwright', 'test', file, '--reporter=list,html', '--output=run/test-results'];
   if (headed) args.push('--headed');
 
   try {
     const { stdout, stderr } = await execFileAsync('npx', args, {
-      timeout: 120000,
+      timeout: 300000,
       maxBuffer: 10 * 1024 * 1024,
       env: { ...process.env, PLAYWRIGHT_HTML_REPORT: join(RUN_DIR, 'playwright-report') },
     });
@@ -146,37 +223,7 @@ async function runPlaywrightTest(file: string, headed: boolean): Promise<TestRes
   }
 }
 
-async function generateFromPlan(
-  planContent: string,
-  url: string | undefined,
-  config: Config
-): Promise<string> {
-  console.log(chalk.cyan('Generating test code from plan...'));
-
-  let context: string | undefined;
-  if (url) {
-    context = `Target URL: ${url}`;
-  }
-
-  const prompt = generatorPrompt(planContent, context);
-  const result = await opencodeRun(prompt, {
-    model: config.opencodeModel,
-    timeout: 120000,
-  });
-
-  if (result.exitCode !== 0) {
-    console.error(chalk.red(`OpenCode generation failed: ${result.output}`));
-    process.exit(1);
-  }
-
-  const output = extractStructuredOutput(result);
-  const code = typeof output === 'string' ? output : result.output;
-
-  const codeMatch = code.match(/```(?:typescript|ts)?\n([\s\S]*?)```/);
-  return codeMatch ? codeMatch[1].trim() : code;
-}
-
-async function healTest(
+export async function healTest(
   testCode: string,
   errorOutput: string,
   config: Config,
@@ -194,104 +241,31 @@ async function healTest(
 
   const output = extractStructuredOutput(result);
   const response = typeof output === 'string' ? output : result.output;
-
   const codeMatch = response.match(/```(?:typescript|ts)?\n([\s\S]*?)```/);
   return codeMatch ? codeMatch[1].trim() : testCode;
 }
 
-export async function testCommand(opts: TestOptions): Promise<void> {
+export async function testCommand(opts: TestOptions): Promise<TestResult> {
   ensureArtifactsDir(opts.config.outputDir);
-  const maxRetries = opts.retries ?? opts.config.maxRetries;
 
-  if (opts.generate) {
-    if (!opts.url) {
-      console.error(chalk.red('--url is required with --generate'));
-      process.exit(1);
-    }
-    console.log(chalk.cyan(`\nLaunching codegen for: ${opts.url}\n`));
-    const args = ['codegen', '--target=playwright-test'];
-    if (opts.headed ?? opts.config.headed) args.push('--headed');
-    args.push(opts.url);
-
-    try {
-      await execFileAsync('npx', ['playwright', ...args], {
-        timeout: 600000,
-        stdio: 'inherit',
-      } as any);
-    } catch {
-      console.log(chalk.gray('Codegen session ended'));
-    }
-    return;
+  if (!opts.execute) {
+    console.error(chalk.red('Specify --execute <file>'));
+    console.log(chalk.gray('Use `generate` to create test files, `test` to execute them.'));
+    return { passed: false, output: 'No --execute file specified' };
   }
 
-  if (opts.execute) {
-    console.log(chalk.cyan(`\nExecuting test: ${opts.execute}\n`));
-    const result = await runPlaywrightTest(opts.execute, opts.headed ?? opts.config.headed);
-    console.log(result.output);
+  console.log(chalk.cyan(`\nExecuting test: ${opts.execute}\n`));
+  const result = await runPlaywrightTest(opts.execute, opts.headed ?? opts.config.headed, opts.url ?? opts.config.targetUrl, opts.storageState);
+  console.log(result.output);
 
-    const resultPath = saveTestResult(result, opts.execute, opts.config.outputDir);
-    console.log(chalk.gray(`Results saved: ${resultPath}`));
-    if (result.reportDir) {
-      console.log(chalk.gray(`HTML report: ${resultPath}/playwright-report/index.html`));
-    }
-
-    console.log(result.passed
-      ? chalk.green.bold('\nTest passed ✓\n')
-      : chalk.red.bold('\nTest failed ✗\n'));
-    process.exit(result.passed ? 0 : 1);
+  const resultPath = saveTestResult(result, opts.execute, opts.config.outputDir);
+  console.log(chalk.gray(`Results saved: ${resultPath}`));
+  if (result.reportDir) {
+    console.log(chalk.gray(`HTML report: ${resultPath}/playwright-report/index.html`));
   }
 
-  if (opts.plan) {
-    const planContent = readArtifact('plans', opts.plan, opts.config.outputDir);
-
-    if (opts.extract) {
-      console.log(chalk.cyan('Extracting test code from plan...\n'));
-      const blocks = extractCodeBlocks(planContent);
-
-      if (blocks.length === 0) {
-        console.error(chalk.red('No Playwright test code blocks found in plan'));
-        process.exit(1);
-      }
-
-      const saved = saveExtractedTests(blocks, opts.config.outputDir);
-      console.log(chalk.green(`Extracted ${saved.length} test file(s):`));
-      for (const p of saved) console.log(chalk.gray(`  ${p}`));
-      console.log('');
-      return;
-    }
-
-    let testCode = await generateFromPlan(planContent, opts.url, opts.config);
-
-    const testFilename = `generated-${Date.now()}.spec.ts`;
-    const testPath = saveTest(testCode, testFilename, opts.config.outputDir);
-    console.log(chalk.green(`Test generated: ${testPath}`));
-
-    let lastError = '';
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      if (attempt > 0) {
-        console.log(chalk.yellow(`\nRetry ${attempt}/${maxRetries}...`));
-        testCode = await healTest(testCode, lastError, opts.config);
-        writeFileSync(testPath, testCode, 'utf-8');
-      }
-
-      console.log(chalk.cyan(`\nRunning test (attempt ${attempt + 1})...\n`));
-      const result = await runPlaywrightTest(testPath, opts.headed ?? opts.config.headed);
-      console.log(result.output);
-
-      const resultPath = saveTestResult(result, testPath, opts.config.outputDir);
-      console.log(chalk.gray(`Results saved: ${resultPath}`));
-
-      if (result.passed) {
-        console.log(chalk.green.bold('\nTest passed ✓\n'));
-        return;
-      }
-      lastError = result.output;
-    }
-
-    console.error(chalk.red.bold(`\nTest failed after ${maxRetries + 1} attempts ✗\n`));
-    process.exit(1);
-  }
-
-  console.error(chalk.red('Specify --generate, --execute <file>, or --plan <file>'));
-  process.exit(1);
+  console.log(result.passed
+    ? chalk.green.bold('\nTest passed ✓\n')
+    : chalk.red.bold('\nTest failed ✗\n'));
+  return result;
 }

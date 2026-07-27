@@ -1,12 +1,15 @@
 import * as readline from 'node:readline';
 import chalk from 'chalk';
-import { resolveConfig, Config } from '../config.js';
+import { resolveConfig, resolveProfile, Config } from '../config.js';
 import { checkCommand } from './check.js';
 import { exploreCommand } from './explore.js';
 import { planCommand } from './plan.js';
 import { testCommand } from './test.js';
+import { generateCommand } from './generate.js';
 import { reportCommand } from './report.js';
 import { skillCommand } from './skill.js';
+import { autorunCommand } from './autorun.js';
+import { healCommand } from './heal.js';
 import { getLatestFile } from '../lib/artifacts.js';
 
 interface SessionState {
@@ -16,16 +19,20 @@ interface SessionState {
   lastPlan?: string;
 }
 
-const COMMANDS = ['check', 'explore', 'plan', 'test', 'report', 'skill', 'set', 'show', 'history', 'clear', 'help', 'exit'];
+const COMMANDS = ['check', 'login', 'explore', 'plan', 'generate', 'test', 'report', 'skill', 'autorun', 'heal', 'set', 'show', 'history', 'clear', 'help', 'exit'];
 
 function showHelp() {
   console.log(chalk.bold('\nAvailable commands:\n'));
   console.log(chalk.cyan('  check                              ') + chalk.gray('Verify environment and connectivity'));
+  console.log(chalk.cyan('  login [options]                    ') + chalk.gray('Log in via Drush ULI, save browser profile'));
   console.log(chalk.cyan('  explore [options]                  ') + chalk.gray('Open browser, navigate, snapshot'));
   console.log(chalk.cyan('  plan [options]                     ') + chalk.gray('Generate test plan from snapshot'));
-  console.log(chalk.cyan('  test [options]                     ') + chalk.gray('Generate or execute Playwright tests'));
+  console.log(chalk.cyan('  generate [options]                 ') + chalk.gray('Generate test files from plan (--extract, --codegen)'));
+  console.log(chalk.cyan('  test [options]                     ') + chalk.gray('Execute Playwright test files'));
   console.log(chalk.cyan('  report [options]                   ') + chalk.gray('Generate summary report'));
   console.log(chalk.cyan('  skill [options]                    ') + chalk.gray('Generate opencode skill files'));
+  console.log(chalk.cyan('  autorun [options]                  ') + chalk.gray('Loop: explore → plan → generate → test → heal → ...'));
+  console.log(chalk.cyan('  heal [options]                     ') + chalk.gray('Re-explore failing pages, generate corrected plan'));
   console.log(chalk.cyan('  set url <url>                      ') + chalk.gray('Set the target URL for this session'));
   console.log(chalk.cyan('  set model <model>                  ') + chalk.gray('Set the OpenCode model'));
   console.log(chalk.cyan('  show                               ') + chalk.gray('Show current session state'));
@@ -43,12 +50,33 @@ function parseInput(line: string): { command: string; args: string[] } {
   const trimmed = line.trim();
   if (!trimmed) return { command: '', args: [] };
 
-  // Handle --help flag after command
-  const parts = trimmed.split(/\s+/);
-  const command = parts[0];
-  const args = parts.slice(1);
+  const args: string[] = [];
+  let current = '';
+  let inQuote: string | null = null;
 
-  return { command, args };
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (inQuote) {
+      if (ch === inQuote) {
+        inQuote = null;
+      } else {
+        current += ch;
+      }
+    } else if (ch === '"' || ch === "'") {
+      inQuote = ch;
+    } else if (ch === ' ' || ch === '\t') {
+      if (current) {
+        args.push(current);
+        current = '';
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (current) args.push(current);
+
+  const command = args[0] ?? '';
+  return { command, args: args.slice(1) };
 }
 
 function buildArgv(command: string, args: string[]): string[] {
@@ -89,6 +117,20 @@ async function runCommand(
         await checkCommand({ url });
         break;
       }
+      case 'login': {
+        const url = extractFlag(args, '--url') ?? state.currentUrl;
+        const { loginCommand } = await import('./login.js');
+        await loginCommand({
+          url,
+          user: extractFlag(args, '--user') ?? 'admin',
+          uli: extractFlag(args, '--uli'),
+          drushCmd: extractFlag(args, '--drush-cmd'),
+          headed: args.includes('--headed'),
+          profile: extractFlag(args, '--profile') ?? './auth-profile',
+          config: state.config,
+        });
+        break;
+      }
       case 'explore': {
         const url = extractFlag(args, '--url') ?? state.currentUrl;
         if (!url) {
@@ -122,6 +164,8 @@ async function runCommand(
           output: extractFlag(args, '--output'),
           prompt: extractFlag(args, '--prompt'),
           promptFile: extractFlag(args, '--prompt-file'),
+          search: extractFlag(args, '--search'),
+          explore: args.includes('--explore'),
           config,
         };
         await planCommand(opts);
@@ -129,18 +173,34 @@ async function runCommand(
         break;
       }
       case 'test': {
+        const config = { ...state.config };
+        const profileFlag = extractFlag(args, '--profile');
+        const profile = resolveProfile(profileFlag, config);
+        const opts: any = {
+          execute: extractFlag(args, '--execute'),
+          headed: args.includes('--headed'),
+          retries: extractFlag(args, '--retries') ? parseInt(extractFlag(args, '--retries')!) : undefined,
+          storageState: profile,
+          config,
+        };
+        const result = await testCommand(opts);
+        if (!result.passed) {
+          console.log(chalk.gray('Use `heal` to attempt self-repair.'));
+        }
+        break;
+      }
+      case 'generate': {
         const url = extractFlag(args, '--url') ?? state.currentUrl;
         const config = { ...state.config };
         const opts: any = {
           url,
           plan: extractFlag(args, '--plan') ?? state.lastPlan,
-          generate: args.includes('--generate'),
-          execute: extractFlag(args, '--execute'),
+          codegen: args.includes('--codegen'),
+          extract: args.includes('--extract'),
           headed: args.includes('--headed'),
-          retries: extractFlag(args, '--retries') ? parseInt(extractFlag(args, '--retries')!) : undefined,
           config,
         };
-        await testCommand(opts);
+        await generateCommand(opts);
         break;
       }
       case 'report': {
@@ -157,6 +217,33 @@ async function runCommand(
         skillCommand({
           outputDir: extractFlag(args, '--output-dir') ?? '.opencode/skills',
           agents: args.includes('--agents'),
+        });
+        break;
+      }
+      case 'autorun': {
+        const url = extractFlag(args, '--url') ?? state.currentUrl;
+        if (!url && !extractFlag(args, '--resume')) {
+          console.error(chalk.red('No URL set. Use: set url <url> or autorun --url <url>'));
+          break;
+        }
+        await autorunCommand({
+          url: url ?? '',
+          headed: args.includes('--headed'),
+          prompt: extractFlag(args, '--prompt'),
+          promptFile: extractFlag(args, '--prompt-file'),
+          maxIterations: extractFlag(args, '--max-iterations') ? parseInt(extractFlag(args, '--max-iterations')!) : undefined,
+          resume: extractFlag(args, '--resume'),
+          config: { ...state.config },
+        });
+        break;
+      }
+      case 'heal': {
+        const url = extractFlag(args, '--url') ?? state.currentUrl;
+        await healCommand({
+          url,
+          model: extractFlag(args, '--model'),
+          headed: args.includes('--headed'),
+          config: { ...state.config },
         });
         break;
       }

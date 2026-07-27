@@ -11,6 +11,7 @@ export interface Config {
   headed: boolean;
   snapshotDepth: number;
   maxRetries: number;
+  storageState?: string;
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -50,6 +51,7 @@ export function loadConfig(overridePath?: string): Config {
   if (process.env.TARGET_URL) envConfig.targetUrl = process.env.TARGET_URL;
   if (process.env.PW_CLI_HEADED) envConfig.headed = process.env.PW_CLI_HEADED === 'true';
   if (process.env.PW_CLI_OUTPUT_DIR) envConfig.outputDir = process.env.PW_CLI_OUTPUT_DIR;
+  if (process.env.STORAGE_STATE) envConfig.storageState = process.env.STORAGE_STATE;
 
   return { ...DEFAULT_CONFIG, ...fileConfig, ...envConfig };
 }
@@ -64,6 +66,18 @@ export function resolveConfig(cliFlags: Partial<Config>, configPath?: string): C
   if (cliFlags.headed !== undefined) merged.headed = cliFlags.headed;
   if (cliFlags.snapshotDepth !== undefined) merged.snapshotDepth = cliFlags.snapshotDepth;
   if (cliFlags.maxRetries !== undefined) merged.maxRetries = cliFlags.maxRetries;
+  if (cliFlags.storageState !== undefined) merged.storageState = cliFlags.storageState;
 
   return merged;
+}
+
+export function resolveProfile(explicit?: string, config?: Config): string | undefined {
+  if (explicit) return explicit;
+  if (config?.storageState) return config.storageState;
+  const defaultProfile = join(process.cwd(), 'auth-profile');
+  if (existsSync(defaultProfile)) {
+    console.log(`  Auto-detected browser profile: ${defaultProfile}`);
+    return defaultProfile;
+  }
+  return undefined;
 }

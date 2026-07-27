@@ -1,9 +1,15 @@
 import chalk from 'chalk';
-import { pwVersion, pwOpen, pwSnapshot, pwClose } from '../lib/pw-cli.js';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { pwVersion, pwOpen, pwSnapshot, pwScreenshot, pwClose } from '../lib/pw-cli.js';
 import { opencodeVersion } from '../lib/opencode.js';
+import { resolveProfile } from '../config.js';
 
 export interface CheckOptions {
   url?: string;
+  screenshot?: boolean;
+  profile?: string;
+  config?: import('../config.js').Config;
 }
 
 export async function checkCommand(opts: CheckOptions): Promise<void> {
@@ -40,8 +46,12 @@ export async function checkCommand(opts: CheckOptions): Promise<void> {
   }
 
   if (opts.url) {
+    const profile = resolveProfile(opts.profile, opts.config);
     console.log(chalk.cyan(`Checking site: ${opts.url}`));
-    const openResult = await pwOpen(opts.url);
+    if (profile) {
+      console.log(chalk.gray(`  Using browser profile: ${profile}`));
+    }
+      const openResult = await pwOpen(opts.url, { profile });
     if (openResult.exitCode === 0) {
       console.log(chalk.green('  ✓ Site loaded successfully'));
 
@@ -50,6 +60,15 @@ export async function checkCommand(opts: CheckOptions): Promise<void> {
         console.log(chalk.green('  ✓ Snapshot captured'));
       } else {
         console.log(chalk.yellow('  ⚠ Snapshot failed but site loaded'));
+      }
+
+      if (opts.screenshot) {
+        const imgResult = await pwScreenshot(`check-${Date.now()}.png`);
+        if (imgResult.exitCode === 0) {
+          console.log(chalk.green('  ✓ Screenshot saved'));
+        } else {
+          console.log(chalk.yellow(`  ⚠ Screenshot failed: ${imgResult.stderr}`));
+        }
       }
 
       await pwClose();

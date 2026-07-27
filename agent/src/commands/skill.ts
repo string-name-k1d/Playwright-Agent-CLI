@@ -29,6 +29,7 @@ Automated end-to-end testing workflow for web applications.
 \`\`\`bash
 pw-cli-agent check                     # verify tools + site (uses TARGET_URL)
 pw-cli-agent check --url <site>        # verify tools + specific site
+pw-cli-agent check --url <site> --screenshot  # verify + capture screenshot
 pw-cli-agent explore                   # capture page snapshot (uses TARGET_URL)
 pw-cli-agent plan                      # generate test plan from latest snapshot
 pw-cli-agent test --plan <file>        # generate + run tests from plan

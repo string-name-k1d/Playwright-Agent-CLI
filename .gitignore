@@ -12,6 +12,7 @@ artifacts/
 
 # Playwright generated dirs
 playwright-report/
+tests/
 test-results/
 run/
 
@@ -32,3 +33,5 @@ Desktop.ini
 *.swp
 *.swo
 *~
+
+auth-profile/
