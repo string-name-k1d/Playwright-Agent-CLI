@@ -108,41 +108,52 @@ export function extractLinks(elements: ElementInfo[]): { ref: string; name: stri
     .map(el => ({ ref: el.ref, name: el.name, url: el.url! }));
 }
 
+export function extractUrls(elements: ElementInfo[]): { name: string; url: string }[] {
+  return elements
+    .filter(el => el.url)
+    .map(el => ({ name: el.name || el.text || el.ref, url: el.url! }));
+}
+
 export function getElementSummary(elements: SnapshotElements): string {
   const lines: string[] = [];
 
   if (elements.links.length > 0) {
     lines.push('Links:');
     for (const l of elements.links.slice(0, 30)) {
-      lines.push(`  [${l.ref}] "${l.name}" → ${l.url}`);
+      const locator = `getByRole('link', { name: '${l.name.replace(/'/g, "\\'")}' })`;
+      lines.push(`  [${l.ref}] "${l.name}" → ${l.url}  (${locator})`);
     }
   }
 
   if (elements.headings.length > 0) {
     lines.push('Headings:');
     for (const h of elements.headings.slice(0, 20)) {
-      lines.push(`  [${h.ref}] H${h.level}: "${h.name}"`);
+      const locator = `getByRole('heading', { name: '${h.name.replace(/'/g, "\\'")}', level: ${h.level} })`;
+      lines.push(`  [${h.ref}] H${h.level}: "${h.name}"  (${locator})`);
     }
   }
 
   if (elements.buttons.length > 0) {
     lines.push('Buttons:');
     for (const b of elements.buttons.slice(0, 15)) {
-      lines.push(`  [${b.ref}] "${b.name}"`);
+      const locator = `getByRole('button', { name: '${b.name.replace(/'/g, "\\'")}' })`;
+      lines.push(`  [${b.ref}] "${b.name}"  (${locator})`);
     }
   }
 
   if (elements.inputs.length > 0) {
     lines.push('Inputs:');
     for (const inp of elements.inputs.slice(0, 15)) {
-      lines.push(`  [${inp.ref}] ${inp.role}: "${inp.name}"`);
+      const locator = `getByRole('${inp.role}', { name: '${inp.name.replace(/'/g, "\\'")}' })`;
+      lines.push(`  [${inp.ref}] ${inp.role}: "${inp.name}"  (${locator})`);
     }
   }
 
   if (elements.images.length > 0) {
     lines.push('Images:');
     for (const img of elements.images.slice(0, 10)) {
-      lines.push(`  [${img.ref}] "${img.name}"`);
+      const locator = `getByRole('img', { name: '${img.name.replace(/'/g, "\\'")}' })`;
+      lines.push(`  [${img.ref}] "${img.name}"  (${locator})`);
     }
   }
 

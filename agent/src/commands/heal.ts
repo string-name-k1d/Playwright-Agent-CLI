@@ -42,8 +42,29 @@ export function parseFailures(resultsDir: string): FailedTest[] {
   if (runDirs.length === 0) return failures;
 
   const latestRun = join(resultsDir, runDirs[0].name);
-  const testResultsDir = join(latestRun, 'test-results');
 
+  // New flat structure: errors/*.md
+  const errorsDir = join(latestRun, 'errors');
+  if (existsSync(errorsDir)) {
+    for (const file of readdirSync(errorsDir).filter(f => f.endsWith('.md'))) {
+      const errorContext = readFileSync(join(errorsDir, file), 'utf-8');
+
+      const nameMatch = errorContext.match(/Name:\s*(.+?)(?:\n|$)/);
+      const name = nameMatch ? nameMatch[1].trim() : file.replace(/\.md$/, '').replace(/-/g, ' ');
+
+      const fileMatch = errorContext.match(/Location:\s*(.+?)(?:\n|$)/);
+      const testFile = fileMatch ? fileMatch[1].trim() : '';
+
+      const tsBlocks = [...errorContext.matchAll(/```ts?\n([\s\S]*?)```/g)];
+      const testSource = tsBlocks.length > 0 ? tsBlocks[tsBlocks.length - 1][1].trim() : '';
+
+      failures.push({ name, file: testFile, errorContext, testSource });
+    }
+    return failures;
+  }
+
+  // Legacy fallback: test-results/*/error-context.md
+  const testResultsDir = join(latestRun, 'test-results');
   if (!existsSync(testResultsDir)) return failures;
 
   const testDirs = readdirSync(testResultsDir).filter(d => !d.startsWith('.'));
@@ -56,11 +77,11 @@ export function parseFailures(resultsDir: string): FailedTest[] {
     const nameMatch = errorContext.match(/Name:\s*(.+?)(?:\n|$)/);
     const name = nameMatch ? nameMatch[1].trim() : dir;
 
-    const sourceMatch = errorContext.match(/```ts?\n([\s\S]*?)```/);
-    const testSource = sourceMatch ? sourceMatch[1].trim() : '';
-
     const fileMatch = errorContext.match(/Location:\s*(.+?)(?:\n|$)/);
     const file = fileMatch ? fileMatch[1].trim() : '';
+
+    const tsBlocks = [...errorContext.matchAll(/```ts?\n([\s\S]*?)```/g)];
+    const testSource = tsBlocks.length > 0 ? tsBlocks[tsBlocks.length - 1][1].trim() : '';
 
     failures.push({ name, file, errorContext, testSource });
   }
@@ -133,6 +154,7 @@ export interface HealOptions {
   quiet?: boolean;
   profile?: string;
   config: Config;
+  testFiles?: string[];
 }
 
 export async function healCommand(opts: HealOptions): Promise<HealResult> {
@@ -149,7 +171,16 @@ export async function healCommand(opts: HealOptions): Promise<HealResult> {
   step(1, 4, 'Analyzing — finding test failures');
 
   const resultsDir = join(opts.config.outputDir, 'results');
-  const failures = parseFailures(resultsDir);
+  let failures = parseFailures(resultsDir);
+
+  // Filter to only failures from current test files
+  if (opts.testFiles && opts.testFiles.length > 0) {
+    const currentFiles = new Set(opts.testFiles.map(f => f.replace(/\\/g, '/')));
+    failures = failures.filter(f => {
+      const normalizedFile = f.file.replace(/\\/g, '/');
+      return [...currentFiles].some(cf => normalizedFile.includes(cf) || cf.includes(normalizedFile));
+    });
+  }
 
   if (failures.length === 0) {
     log(chalk.yellow('  No test failures found in latest run.'));
@@ -239,10 +270,19 @@ export async function healCommand(opts: HealOptions): Promise<HealResult> {
   step(4, 4, 'Heal — generating corrected plan via AI');
 
   const failureContext = failures.map(f => {
-    const errorMatch = f.errorContext.match(/# Error details\n\n```([\s\S]*?)```/);
-    const errorSnippet = errorMatch ? errorMatch[1].trim().slice(0, 2000) : f.errorContext.slice(0, 2000);
-    const sourceLines = f.testSource.split('\n').filter(l => l.includes('expect') || l.includes('await')).slice(0, 10);
-    const sourceSnippet = sourceLines.join('\n');
+    // Extract all code blocks from error-context.md
+    const codeBlocks = [...f.errorContext.matchAll(/```(\w*)\n([\s\S]*?)```/g)];
+
+    // Section 1: Error details (first code block)
+    const errorBlock = codeBlocks.find(m => m[1] === '' || m[1] === 'text');
+    const errorSnippet = errorBlock ? errorBlock[2].trim().slice(0, 3000) : '';
+
+    // Section 2: Accessibility snapshot (yaml code block)
+    const snapshotBlock = codeBlocks.find(m => m[1] === 'yaml');
+    const snapshotSnippet = snapshotBlock ? snapshotBlock[2].trim().slice(0, 4000) : '';
+
+    // Section 3: Full test source with line numbers (last ts block)
+    const testSourceFull = f.testSource || '';
 
     // Detect element-not-found in this specific failure
     const isElementNotFound = elementErrors.some(e => e.testName === f.name);
@@ -250,7 +290,27 @@ export async function healCommand(opts: HealOptions): Promise<HealResult> {
       ? '\n\n**Note:** This failure involves an element-not-found error. The page snapshot has been re-explored. Use the FRESH snapshot to find the correct element refs.'
       : '';
 
-    return `### ${f.name}\n\n**Error:**\n\`\`\`\n${errorSnippet}\n\`\`\`\n\n**Key assertions:**\n\`\`\`ts\n${sourceSnippet}\n\`\`\`${elementNotFoundNote}`;
+    const parts: string[] = [];
+    parts.push(`### ${f.name}`);
+    parts.push(`**File:** ${f.file}`);
+
+    if (errorSnippet) {
+      parts.push(`\n**Error message:**\n\`\`\`\n${errorSnippet}\n\`\`\``);
+    }
+
+    if (testSourceFull) {
+      parts.push(`\n**Failing test source:**\n\`\`\`ts\n${testSourceFull}\n\`\`\``);
+    }
+
+    if (snapshotSnippet) {
+      parts.push(`\n**Page snapshot at failure time:**\n\`\`\`yaml\n${snapshotSnippet}\n\`\`\``);
+    }
+
+    if (elementNotFoundNote) {
+      parts.push(elementNotFoundNote);
+    }
+
+    return parts.join('\n');
   }).join('\n\n---\n\n');
 
   // Combine all snapshots

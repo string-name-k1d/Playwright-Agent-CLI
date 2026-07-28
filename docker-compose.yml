@@ -6,8 +6,15 @@ services:
       context: ./agent
     env_file:
       .env
+    environment:
+      - DISPLAY=:99
+      - NOVNC_PORT=6080
+      - VNC_PORT=5900
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    ports:
+      - "6080:6080"   # noVNC web client
+      - "5900:5900"   # VNC (optional, for native VNC clients)
     networks:
       - drupal_k8
       - default
@@ -21,7 +28,7 @@ services:
       # Mount host opencode config for API keys and settings
       - ${USERPROFILE:-~}/.config/opencode:/root/.config/opencode:ro
     working_dir: /workspace/agent
-    command: tail -f /dev/null
+    command: /usr/local/bin/start-xvfb.sh
 
 networks:
   drupal_k8:

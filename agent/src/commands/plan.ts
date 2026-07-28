@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { readFileSync } from 'node:fs';
 import { opencodeRun, extractMarkdown } from '../lib/opencode.js';
-import { savePlan, ensureArtifactsDir, getLatestFile } from '../lib/artifacts.js';
+import { savePlan, ensureArtifactsDir, getLatestFile, isValidPlan, stripPreamble } from '../lib/artifacts.js';
 import { plannerPrompt } from '../lib/prompt-templates.js';
 import { exploreCommand } from './explore.js';
 import {
@@ -15,6 +15,7 @@ import {
   type ExploreEntry,
 } from '../lib/explore-registry.js';
 import { getElementSummary } from '../lib/snapshot-parser.js';
+import { loadReferences, formatReferencesForPrompt, type TestReference } from '../lib/reference-loader.js';
 import { Config } from '../config.js';
 
 export interface PlanOptions {
@@ -26,6 +27,7 @@ export interface PlanOptions {
   promptFile?: string;
   search?: string;
   explore?: boolean;
+  reference?: string;
   config: Config;
 }
 
@@ -169,6 +171,21 @@ export async function planCommand(opts: PlanOptions): Promise<void> {
 
   const context = contextParts.length > 0 ? contextParts.join('\n\n') : undefined;
 
+  // ── Load user references ───────────────────────────────────────
+  let referenceContent: string | undefined;
+  if (opts.reference) {
+    const references = loadReferences(opts.reference);
+    if (references.length > 0) {
+      console.log(chalk.cyan(`Loaded ${references.length} reference(s) from: ${opts.reference}`));
+      for (const ref of references) {
+        console.log(chalk.gray(`  - ${ref.name} (${ref.steps.length} steps, ${ref.screenshots.length} screenshots)`));
+      }
+      referenceContent = formatReferencesForPrompt(references);
+    } else {
+      console.log(chalk.yellow(`No references found at: ${opts.reference}`));
+    }
+  }
+
   // ── Resolve requirements ───────────────────────────────────────
   let requirements: string | undefined;
   if (opts.prompt) {
@@ -182,23 +199,60 @@ export async function planCommand(opts: PlanOptions): Promise<void> {
   // ── Generate plan ──────────────────────────────────────────────
   console.log(chalk.cyan('\nGenerating test plan via opencode...\n'));
 
-  const prompt = plannerPrompt(snapshotContent, context, requirements);
-  const result = await opencodeRun(prompt, {
-    model: opts.model ?? opts.config.opencodeModel,
-    timeout: 300000,
-  });
+  const prompt = plannerPrompt(snapshotContent, context, requirements, referenceContent);
+  const MAX_RETRIES = 2;
+  let plan = '';
+  let lastValidation: ReturnType<typeof isValidPlan> = { valid: false, score: 0, reason: '' };
 
-  const plan = extractMarkdown(result);
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      console.log(chalk.yellow(`\nRetrying plan generation (attempt ${attempt + 1}/${MAX_RETRIES + 1}) — previous response was not a structured plan: ${lastValidation.reason}`));
+    }
+
+    const result = await opencodeRun(prompt, {
+      model: opts.model ?? opts.config.opencodeModel,
+      timeout: 300000,
+    });
+
+    const rawPlan = extractMarkdown(result);
+
+    if (!rawPlan || rawPlan.length < 20) {
+      if (result.exitCode !== 0) {
+        const hint = result.output.includes('401') || result.output.includes('No provider available')
+          ? '\n  Hint: OpenCode API auth failed. Check your API key or try again later.'
+          : '';
+        console.error(chalk.red(`OpenCode failed (exit ${result.exitCode})${hint}`));
+        process.exit(1);
+      }
+      lastValidation = { valid: false, score: 0, reason: 'output too short or empty' };
+      continue;
+    }
+
+    // First: try stripping preamble
+    const stripped = stripPreamble(rawPlan);
+    const toValidate = stripped.length > rawPlan.length * 0.5 ? stripped : rawPlan;
+
+    // Validate structure
+    lastValidation = isValidPlan(toValidate);
+
+    if (lastValidation.valid) {
+      plan = toValidate;
+      if (toValidate !== rawPlan) {
+        console.log(chalk.gray('  (stripped conversational preamble from response)'));
+      }
+      break;
+    }
+
+    // On last attempt, use the best we have (stripped version)
+    if (attempt === MAX_RETRIES) {
+      plan = toValidate;
+      console.log(chalk.yellow(`  Warning: plan structure is weak (score ${lastValidation.score}): ${lastValidation.reason}`));
+      console.log(chalk.yellow('  Saving anyway — review the plan for completeness.'));
+    }
+  }
 
   if (!plan || plan.length < 20) {
-    if (result.exitCode !== 0) {
-      const hint = result.output.includes('401') || result.output.includes('No provider available')
-        ? '\n  Hint: OpenCode API auth failed. Check your API key or try again later.'
-        : '';
-      console.error(chalk.red(`OpenCode failed (exit ${result.exitCode})${hint}`));
-    } else {
-      console.error(chalk.red('Plan output too short or empty'));
-    }
+    console.error(chalk.red('Plan output too short or empty'));
     process.exit(1);
   }
 

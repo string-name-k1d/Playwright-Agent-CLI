@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { pwOpen, pwSnapshot, pwScreenshot, pwClose, parseSnapshotPageInfo } from '../lib/pw-cli.js';
 import { saveSnapshot, ensureArtifactsDir } from '../lib/artifacts.js';
 import { registerExploreEntry, type ExploreEntry } from '../lib/explore-registry.js';
+import { saveSiteProfile } from '../lib/site-profile.js';
 import { Config, resolveProfile } from '../config.js';
 
 export interface ExploreOptions {
@@ -107,6 +108,13 @@ export async function exploreCommand(opts: ExploreOptions): Promise<ExploreResul
   }
 
   await pwClose({ cliPath: opts.config.playwrightCliPath });
+
+  // Regenerate site profile
+  const profilePath = saveSiteProfile(opts.config.outputDir);
+  if (profilePath) {
+    console.log(chalk.gray(`  Site profile: ${profilePath}`));
+  }
+
   console.log(chalk.green('\nExploration complete\n'));
 
   return { entry, snapshotPath: destPath };

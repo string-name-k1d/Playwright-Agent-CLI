@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { opencodeRun, extractStructuredOutput } from '../lib/opencode.js';
 import { saveTest, ensureArtifactsDir, readArtifact, extractCodeBlocks, saveExtractedTests, wrapInTest } from '../lib/artifacts.js';
 import { generatorPrompt } from '../lib/prompt-templates.js';
+import { loadReferences, formatReferencesForPrompt } from '../lib/reference-loader.js';
 import { Config } from '../config.js';
 
 const execFileAsync = promisify(execFile);
@@ -15,6 +16,7 @@ export interface GenerateOptions {
   codegen?: boolean;
   extract?: boolean;
   headed?: boolean;
+  reference?: string;
   config: Config;
 }
 
@@ -25,12 +27,13 @@ export interface GenerateResult {
 export async function generateFromPlan(
   planContent: string,
   url: string | undefined,
-  config: Config
+  config: Config,
+  referenceContent?: string
 ): Promise<string> {
   console.log(chalk.cyan('Generating test code from plan...'));
 
   const context = url ? `Target URL: ${url}` : undefined;
-  const prompt = generatorPrompt(planContent, context);
+  const prompt = generatorPrompt(planContent, context, referenceContent);
   const result = await opencodeRun(prompt, {
     model: config.opencodeModel,
     timeout: 120000,
@@ -38,6 +41,10 @@ export async function generateFromPlan(
 
   const output = extractStructuredOutput(result);
   const raw = typeof output === 'string' ? output : result.output;
+
+  // Debug: log raw output length and first 200 chars
+  console.log(chalk.gray(`  OpenCode output: ${raw.length} chars`));
+  console.log(chalk.gray(`  Preview: ${raw.slice(0, 200).replace(/\n/g, '\\n')}`));
 
   // Strategy 1: Extract the largest fenced code block
   const codeBlockRegex = /```(?:ts|typescript|javascript|js|playwright-test)?\s*\n([\s\S]*?)```/g;
@@ -80,10 +87,11 @@ export async function generateFromPlan(
 
 export async function extractTestsFromPlan(
   planContent: string,
-  outputDir: string
+  outputDir: string,
+  url?: string
 ): Promise<string[]> {
   console.log(chalk.cyan('Extracting test code from plan...\n'));
-  const blocks = extractCodeBlocks(planContent);
+  const blocks = extractCodeBlocks(planContent, url);
 
   if (blocks.length === 0) {
     throw new Error('No Playwright test code blocks found in plan');
@@ -115,6 +123,21 @@ export async function launchCodegen(url: string, headed: boolean): Promise<void>
 export async function generateCommand(opts: GenerateOptions): Promise<GenerateResult> {
   ensureArtifactsDir(opts.config.outputDir);
 
+  // Load user references if provided
+  let referenceContent: string | undefined;
+  if (opts.reference) {
+    const references = loadReferences(opts.reference);
+    if (references.length > 0) {
+      console.log(chalk.cyan(`Loaded ${references.length} reference(s) from: ${opts.reference}`));
+      for (const ref of references) {
+        console.log(chalk.gray(`  - ${ref.name} (${ref.steps.length} steps, ${ref.screenshots.length} screenshots)`));
+      }
+      referenceContent = formatReferencesForPrompt(references);
+    } else {
+      console.log(chalk.yellow(`No references found at: ${opts.reference}`));
+    }
+  }
+
   if (opts.codegen) {
     if (!opts.url) {
       console.error(chalk.red('--url is required with --codegen'));
@@ -139,7 +162,7 @@ export async function generateCommand(opts: GenerateOptions): Promise<GenerateRe
       console.log(chalk.yellow('No code blocks found in plan — falling back to opencode generation\n'));
     }
 
-    const testCode = await generateFromPlan(planContent, opts.url, opts.config);
+    const testCode = await generateFromPlan(planContent, opts.url, opts.config, referenceContent);
     const wrappedCode = wrapInTest(testCode, `generated-${Date.now()}`);
     const testFilename = `generated-${Date.now()}.spec.ts`;
     const testPath = saveTest(wrappedCode, testFilename, opts.config.outputDir);

@@ -16,7 +16,8 @@
 
 ## Remaining
 
-- [ ] Self-healing loop: test failure → opencode diagnosis → fix → retry
+- [x] Self-healing loop: test failure → opencode diagnosis → fix → retry
 - [ ] HTTP server mode: opencode serve integration testing
-- [ ] Plan-to-test: auto-extract code blocks when plan contains executable tests
+- [x] Plan-to-test: auto-extract code blocks when plan contains executable tests
 - [ ] Config validation: helpful errors for missing/invalid settings
+- [x] Generated prompts markdown for Add Standard Page form (50 prompts)

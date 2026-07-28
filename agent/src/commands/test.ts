@@ -14,6 +14,7 @@ export interface TestOptions {
   execute?: string;
   headed?: boolean;
   retries?: number;
+  workers?: number;
   snapshot?: string;
   url?: string;
   storageState?: string;
@@ -30,90 +31,64 @@ function timestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 }
 
-export function saveTestResult(result: TestResult, testFile: string, outputDir: string): string {
+export function saveTestResult(result: TestResult, testFile: string, outputDir: string, runDir?: string): string {
   const resultsDir = join(outputDir, 'results');
   if (!existsSync(resultsDir)) mkdirSync(resultsDir, { recursive: true });
 
-  const runId = `run-${timestamp()}`;
-  const runDir = join(resultsDir, runId);
-  mkdirSync(runDir, { recursive: true });
-
-  writeFileSync(join(runDir, 'output.txt'), result.output, 'utf-8');
+  if (!runDir) {
+    runDir = join(resultsDir, `run-${timestamp()}`);
+    mkdirSync(runDir, { recursive: true });
+  }
 
   const passed = (result.output.match(/✓/g) ?? []).length;
   const failed = (result.output.match(/✘/g) ?? []).length;
   const failedTests = [...result.output.matchAll(/✘.*?›\s*(.*)/g)].map(m => m[1].trim());
   const passedTests = [...result.output.matchAll(/✓.*?›\s*(.*)/g)].map(m => m[1].trim());
 
-  let reportRelative = '';
-  const playwrightReport = join(RUN_DIR, 'playwright-report');
-  if (existsSync(playwrightReport)) {
-    const destReport = join(runDir, 'playwright-report');
-    copyDirectorySync(playwrightReport, destReport);
-    result.reportDir = destReport;
-    reportRelative = `[HTML Report](playwright-report/index.html)`;
-  }
-
+  // Flatten error-context.md files into errors/
   const testResults = join(RUN_DIR, 'test-results');
   if (existsSync(testResults)) {
-    copyDirectorySync(testResults, join(runDir, 'test-results'));
+    const errorsDir = join(runDir, 'errors');
+    for (const dir of readdirSync(testResults).filter(d => !d.startsWith('.'))) {
+      const errCtx = join(testResults, dir, 'error-context.md');
+      if (existsSync(errCtx)) {
+        if (!existsSync(errorsDir)) mkdirSync(errorsDir, { recursive: true });
+        // Use a readable name from the dir: strip hash prefix, replace dashes with spaces
+        const readableName = dir.replace(/^[a-z0-9]+-[a-z0-9]+-/, '').replace(/-/g, ' ');
+        copyFileSync(errCtx, join(errorsDir, `${readableName}.md`));
+      }
+    }
+  }
 
-    // Also copy screenshots to top-level screenshots/ in the run dir
-    const screenshotsDir = join(runDir, 'screenshots');
+  // Copy screenshots to flat dir (only once, skip nested duplication)
+  const screenshotsDir = join(runDir, 'screenshots');
+  if (existsSync(testResults)) {
     copyScreenshots(testResults, screenshotsDir);
   }
 
-  cleanupRunDir();
-
-  const summary = [
-    `# Test Run: ${runId}`,
-    '',
-    `| Field | Value |`,
-    `|-------|-------|`,
-    `| **Test File** | ${testFile} |`,
-    `| **Status** | ${result.passed ? 'PASSED' : 'FAILED'} |`,
-    `| **Passed** | ${passed} |`,
-    `| **Failed** | ${failed} |`,
-    `| **Timestamp** | ${new Date().toISOString()} |`,
-    '',
-  ];
-
-  if (passedTests.length > 0) {
-    summary.push('## Passed');
-    for (const t of passedTests) summary.push(`- ${t}`);
-    summary.push('');
+  // Append to summary
+  const summaryPath = join(runDir, 'summary.md');
+  const testStatus = result.passed ? 'PASSED' : 'FAILED';
+  const line = `| ${testFile} | ${testStatus} | ${passed} passed, ${failed} failed |`;
+  if (!existsSync(summaryPath)) {
+    writeFileSync(summaryPath, [
+      `# Test Run`,
+      '',
+      `| Test File | Status | Results |`,
+      `|-----------|--------|---------|`,
+      line,
+      '',
+    ].join('\n'), 'utf-8');
+  } else {
+    const existing = readFileSync(summaryPath, 'utf-8');
+    // Insert before the trailing newlines
+    const insertAt = existing.lastIndexOf('\n---\n') !== -1
+      ? existing.lastIndexOf('\n---\n')
+      : existing.length;
+    writeFileSync(summaryPath, existing.slice(0, insertAt) + line + '\n' + existing.slice(insertAt), 'utf-8');
   }
-
-  if (failedTests.length > 0) {
-    summary.push('## Failed');
-    for (const t of failedTests) summary.push(`- ${t}`);
-    summary.push('');
-  }
-
-  summary.push('## Files');
-  summary.push(`- Test: \`${testFile}\``);
-  summary.push(`- Output: \`output.txt\``);
-  if (reportRelative) summary.push(`- ${reportRelative}`);
-  summary.push(`- Screenshots: \`screenshots/\``);
-  summary.push('');
-
-  writeFileSync(join(runDir, 'summary.md'), summary.join('\n'), 'utf-8');
 
   return runDir;
-}
-
-function copyDirectorySync(src: string, dest: string): void {
-  mkdirSync(dest, { recursive: true });
-  const entries = readdirSync(src, { withFileTypes: true });
-  for (const entry of entries) {
-    const srcPath = join(src, entry.name);
-    const destPath = join(dest, entry.name);
-    if (entry.isDirectory()) {
-      copyDirectorySync(srcPath, destPath);
-    } else {
-      copyFileSync(srcPath, destPath);
-    }
-  }
 }
 
 function copyScreenshots(testResultsDir: string, destDir: string): void {
@@ -136,8 +111,8 @@ const PLAYWRIGHT_CONFIG = join(process.cwd(), 'playwright.config.ts');
 
 function ensurePlaywrightConfig(targetUrl?: string, storageState?: string): void {
   const useOptions: Record<string, unknown> = {
-    actionTimeout: 30000,
-    navigationTimeout: 60000,
+    actionTimeout: 10000,
+    navigationTimeout: 30000,
   };
 
   // Resolve targetUrl: explicit param → existing config → default
@@ -188,7 +163,7 @@ function ensurePlaywrightConfig(targetUrl?: string, storageState?: string): void
     }
   }
   lines.push('  },');
-  lines.push('  timeout: 60000,');
+  lines.push('  timeout: 30000,');
   lines.push('});');
   lines.push('');
 
@@ -202,18 +177,28 @@ export function cleanupRunDir(): void {
   }
 }
 
-export async function runPlaywrightTest(file: string, headed: boolean, targetUrl?: string, storageState?: string): Promise<TestResult> {
+export async function runPlaywrightTest(
+  file: string | string[],
+  headed: boolean,
+  targetUrl?: string,
+  storageState?: string,
+  retries?: number,
+  workers?: number,
+): Promise<TestResult> {
   cleanupRunDir();
   mkdirSync(RUN_DIR, { recursive: true });
 
   ensurePlaywrightConfig(targetUrl, storageState);
 
-  const args = ['playwright', 'test', file, '--reporter=list,html', '--output=run/test-results'];
+  const files = Array.isArray(file) ? file : [file];
+  const args = ['playwright', 'test', ...files, '--reporter=list,html', '--output=run/test-results'];
   if (headed) args.push('--headed');
+  if (retries && retries > 0) args.push(`--retries=${retries}`);
+  if (workers && workers > 0) args.push(`--workers=${workers}`);
 
   try {
     const { stdout, stderr } = await execFileAsync('npx', args, {
-      timeout: 300000,
+      timeout: 120000,
       maxBuffer: 10 * 1024 * 1024,
       env: { ...process.env, PLAYWRIGHT_HTML_REPORT: join(RUN_DIR, 'playwright-report') },
     });
@@ -255,7 +240,14 @@ export async function testCommand(opts: TestOptions): Promise<TestResult> {
   }
 
   console.log(chalk.cyan(`\nExecuting test: ${opts.execute}\n`));
-  const result = await runPlaywrightTest(opts.execute, opts.headed ?? opts.config.headed, opts.url ?? opts.config.targetUrl, opts.storageState);
+  const result = await runPlaywrightTest(
+    opts.execute,
+    opts.headed ?? opts.config.headed,
+    opts.url ?? opts.config.targetUrl,
+    opts.storageState,
+    opts.retries,
+    opts.workers,
+  );
   console.log(result.output);
 
   const resultPath = saveTestResult(result, opts.execute, opts.config.outputDir);

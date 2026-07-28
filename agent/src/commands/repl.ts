@@ -180,6 +180,7 @@ async function runCommand(
           execute: extractFlag(args, '--execute'),
           headed: args.includes('--headed'),
           retries: extractFlag(args, '--retries') ? parseInt(extractFlag(args, '--retries')!) : undefined,
+          workers: extractFlag(args, '--workers') ? parseInt(extractFlag(args, '--workers')!) : undefined,
           storageState: profile,
           config,
         };

@@ -97,7 +97,7 @@ async function doGenerate(planPath: string, url: string | undefined, config: Con
 
   // Try extracting code blocks first
   try {
-    const files = await extractTestsFromPlan(planContent, config.outputDir);
+    const files = await extractTestsFromPlan(planContent, config.outputDir, url);
     if (files.length > 0) {
       substep(`Extracted ${files.length} test file(s)`);
       return files;
@@ -119,33 +119,39 @@ async function doGenerate(planPath: string, url: string | undefined, config: Con
 
 async function doTest(testFiles: string[], headed: boolean, config: Config, storageState?: string): Promise<boolean> {
   step('Test');
-  let allPassed = true;
 
-  for (const testFile of testFiles) {
-    substep(`Running: ${testFile}`);
-    cleanupAutorunRun();
-    mkdirSync(RUN_DIR, { recursive: true });
+  // Create a single run directory for all tests in this iteration
+  const resultsDir = join(config.outputDir, 'results');
+  if (!existsSync(resultsDir)) mkdirSync(resultsDir, { recursive: true });
+  const runId = `run-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`;
+  const sharedRunDir = join(resultsDir, runId);
+  mkdirSync(sharedRunDir, { recursive: true });
 
-    try {
-      const result = await runPlaywrightTest(testFile, headed, undefined, storageState);
-      console.log(result.output);
+  // Run all test files in a single parallel Playwright invocation
+  substep(`Running ${testFiles.length} file(s) with parallel workers...`);
+  cleanupAutorunRun();
+  mkdirSync(RUN_DIR, { recursive: true });
 
-      const resultPath = saveTestResult(result, testFile, config.outputDir);
-      substep(`Results: ${resultPath}`);
+  try {
+    const result = await runPlaywrightTest(testFiles, headed, undefined, storageState);
+    console.log(result.output);
 
-      if (!result.passed) allPassed = false;
-    } catch (err: any) {
-      console.error(chalk.red(`Test error: ${err.message}`));
-      allPassed = false;
-    } finally {
-      cleanupAutorunRun();
+    // Save combined result under each test file for compatibility
+    for (const testFile of testFiles) {
+      saveTestResult(result, testFile, config.outputDir, sharedRunDir);
     }
-  }
+    substep(`Results: ${sharedRunDir}`);
 
-  return allPassed;
+    return result.passed;
+  } catch (err: any) {
+    console.error(chalk.red(`Test error: ${err.message}`));
+    return false;
+  } finally {
+    cleanupAutorunRun();
+  }
 }
 
-async function doHeal(url: string | undefined, headed: boolean, config: Config, snapshotPath?: string, profile?: string): Promise<string> {
+async function doHeal(url: string | undefined, headed: boolean, config: Config, snapshotPath?: string, profile?: string, testFiles?: string[]): Promise<string> {
   step('Heal');
   const result = await healCommand({
     url,
@@ -154,6 +160,7 @@ async function doHeal(url: string | undefined, headed: boolean, config: Config, 
     quiet: true,
     profile,
     config,
+    testFiles,
   });
 
   if (result.failureCount === 0) {
@@ -258,7 +265,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
       // Heal (if resuming from heal step or after test failure)
       if (state.step === 'heal') {
         if (state.iteration < state.maxIterations) {
-          const healPlanPath = await doHeal(state.url, state.headed, config, state.snapshotPath, state.profile);
+          const healPlanPath = await doHeal(state.url, state.headed, config, state.snapshotPath, state.profile, state.testFiles);
           if (healPlanPath) {
             state.planPath = healPlanPath;
           }
@@ -314,7 +321,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
       // Heal (if not last iteration)
       if (state.iteration < state.maxIterations) {
         if (state.step === 'test' || state.step === 'heal') {
-          const healPlanPath = await doHeal(state.url, state.headed, config, state.snapshotPath, state.profile);
+          const healPlanPath = await doHeal(state.url, state.headed, config, state.snapshotPath, state.profile, state.testFiles);
           if (healPlanPath) {
             state.planPath = healPlanPath;
           }

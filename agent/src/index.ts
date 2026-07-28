@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { resolveConfig, resolveProfile } from './config.js';
 import { checkCommand } from './commands/check.js';
 import { exploreCommand } from './commands/explore.js';
+import { guideCommand } from './commands/guide.js';
 import { planCommand } from './commands/plan.js';
 import { testCommand } from './commands/test.js';
 import { generateCommand } from './commands/generate.js';
@@ -62,11 +63,24 @@ program
   .option('--depth <N>', 'Snapshot tree depth', parseInt)
   .option('--screenshot', 'Also capture a PNG screenshot')
   .option('--headed', 'Show browser window')
+  .option('--guide', 'Interactive guided browsing session (headed)')
   .option('--profile <path>', 'Persistent browser profile for saved login state')
   .action(async (opts) => {
     const parent = program.opts();
     const config = resolveConfig({ headed: opts.headed, storageState: opts.profile }, parent.config);
     const url = opts.url ?? config.targetUrl;
+
+    if (opts.guide) {
+      // Interactive guided session — always headed (requires display)
+      await guideCommand({
+        url,
+        headed: true,
+        profile: opts.profile,
+        config,
+      });
+      return;
+    }
+
     if (!url) {
       console.error('Error: --url is required (or set TARGET_URL in .env)');
       process.exit(1);
@@ -92,6 +106,7 @@ program
   .option('--prompt-file <file>', 'Markdown file containing requirements/targets to test')
   .option('--search <query>', 'Search explore registry for matching records')
   .option('--explore', 'Also explore unvisited pages found in links')
+  .option('--reference <path>', 'User test procedures/screenshots directory or file')
   .action(async (opts) => {
     const parent = program.opts();
     const config = resolveConfig({ opencodeModel: opts.model }, parent.config);
@@ -104,6 +119,7 @@ program
       promptFile: opts.promptFile,
       search: opts.search,
       explore: opts.explore,
+      reference: opts.reference,
       config,
     });
   });
@@ -115,6 +131,7 @@ program
   .option('--execute <file>', 'Execute existing test file')
   .option('--headed', 'Show browser window')
   .option('--retries <N>', 'Self-heal retry count', parseInt)
+  .option('--workers <N>', 'Parallel worker count (default: 4)', parseInt)
   .option('--profile <path>', 'Browser profile for auth state (auto-detects ./auth-profile)')
   .action(async (opts) => {
     const parent = program.opts();
@@ -124,6 +141,7 @@ program
       execute: opts.execute,
       headed: opts.headed,
       retries: opts.retries,
+      workers: opts.workers,
       url: opts.url ?? config.targetUrl,
       storageState: profile,
       config,
@@ -139,6 +157,7 @@ program
   .option('--extract', 'Extract test code directly from plan (skip opencode generation)')
   .option('--codegen', 'Launch interactive playwright codegen')
   .option('--headed', 'Show browser window')
+  .option('--reference <path>', 'User test procedures/screenshots directory or file')
   .action(async (opts) => {
     const parent = program.opts();
     const config = resolveConfig({ headed: opts.headed }, parent.config);
@@ -148,6 +167,7 @@ program
       codegen: opts.codegen,
       extract: opts.extract,
       headed: opts.headed,
+      reference: opts.reference,
       config,
     });
   });

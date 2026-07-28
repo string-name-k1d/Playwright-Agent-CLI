@@ -2,6 +2,10 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSy
 import { join } from 'node:path';
 import { parseSnapshotElements, getElementSummary, type SnapshotElements, type ElementInfo } from './snapshot-parser.js';
 
+/**
+ * Represents a single explore entry in the registry.
+ * Stores metadata about a page snapshot including URL, title, element counts, and links.
+ */
 export interface ExploreEntry {
   url: string;
   title: string;
@@ -35,6 +39,17 @@ function saveRegistry(entries: ExploreEntry[], baseDir: string): void {
   writeFileSync(path, JSON.stringify(entries, null, 2), 'utf-8');
 }
 
+/**
+ * Registers a new explore entry in the registry.
+ * Parses the snapshot content to extract element metadata and stores it.
+ *
+ * @param url - The page URL that was explored
+ * @param title - The page title from the snapshot
+ * @param snapshotPath - Path to the snapshot file
+ * @param snapshotFileName - Name of the snapshot file
+ * @param baseDir - Base directory for artifacts
+ * @returns The created ExploreEntry with parsed metadata
+ */
 export function registerExploreEntry(
   url: string,
   title: string,
@@ -88,7 +103,11 @@ export function searchExploreEntries(query: string, baseDir: string): ExploreEnt
 }
 
 export function getSnapshotContent(entry: ExploreEntry): string {
-  return readFileSync(entry.snapshotPath, 'utf-8');
+  try {
+    return readFileSync(entry.snapshotPath, 'utf-8');
+  } catch {
+    return '';
+  }
 }
 
 export function getSnapshotElements(entry: ExploreEntry): SnapshotElements {

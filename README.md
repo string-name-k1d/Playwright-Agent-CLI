@@ -10,6 +10,7 @@ A TypeScript CLI tool implementing an explore > plan > test > report workflow fo
   - [check](#check)
   - [login](#login)
   - [explore](#explore)
+- [guide](#guided-browsing-session)
   - [plan](#plan)
   - [generate](#generate)
   - [test](#test)
@@ -22,6 +23,8 @@ A TypeScript CLI tool implementing an explore > plan > test > report workflow fo
 - [Screenshots](#screenshots)
 - [Natural Language Prompts](#natural-language-prompts)
 - [Explore Registry](#explore-registry)
+- [Site Profile](#site-profile)
+- [User References](#user-references)
 - [Architecture](#architecture)
 - [File Structure](#file-structure)
 - [Configuration](#configuration)
@@ -145,11 +148,14 @@ STORAGE_STATE=./auth-profile
 
 ### `explore`
 
-Open a browser, navigate to a URL, capture a snapshot and optional screenshot. Each explore result is registered in the **explore registry** — a searchable index of all snapshots with element metadata (links, headings, buttons, inputs).
+Open a browser, navigate to a URL, capture a snapshot and optional screenshot. Each explore result is registered in the **explore registry** — a searchable index of all snapshots with element metadata (links, headings, buttons, inputs). After each run, a **site profile** is automatically regenerated.
 
 ```bash
 pw-cli-agent explore --url https://example.com
 pw-cli-agent explore --url https://example.com --screenshot --depth 4 --headed
+
+# Interactive guided browsing session
+pw-cli-agent explore --guide --url https://example.com
 ```
 
 **Options:**
@@ -157,9 +163,79 @@ pw-cli-agent explore --url https://example.com --screenshot --depth 4 --headed
 - `--depth <N>` — snapshot tree depth (default: full)
 - `--screenshot` — also capture a PNG screenshot
 - `--headed` — show browser window
+- `--guide` — interactive guided browsing session (opens headed browser, user navigates manually while tool records observations)
 - `--profile <path>` — explicit browser profile path (overrides auto-detection)
 
-Artifacts saved to `./artifacts/explore/`. Registry stored at `./artifacts/explore-registry.json`.
+Artifacts saved to `./artifacts/explore/`. Registry stored at `./artifacts/explore-registry.json`. Site profile saved to `./artifacts/site-profile.md`.
+
+### Guided Browsing Session
+
+An interactive mode where you manually browse a website while the tool records observations. Useful for building the site profile before automated testing. Requires a display server (X11/Wayland) — the browser window must be visible.
+
+```bash
+# Docker (Xvfb runs automatically inside the container)
+docker-compose exec agent node dist/index.js explore --guide --url http://mtpc_test
+
+# Linux with display
+export DISPLAY=:0
+pw-cli-agent explore --guide --url https://example.com
+
+# WSL — install VcXsrv or use WSLg, then:
+export DISPLAY=:0
+pw-cli-agent explore --guide --url https://example.com
+
+# macOS
+pw-cli-agent explore --guide --url https://example.com
+```
+
+**Note:** The `--guide` flag always opens a headed (visible) browser. If you see "No DISPLAY or WAYLAND_DISPLAY environment variable is set", you need a display server running.
+
+**How it works:**
+1. Opens a headed browser window at the target URL
+2. Takes an initial snapshot and shows page elements (links, buttons, inputs)
+3. Enters an interactive prompt where you navigate the site
+4. Each navigation, click, and form fill is recorded with a snapshot
+5. On exit, saves a session summary and regenerates the site profile
+
+**Interactive commands:**
+
+| Command | Description |
+|---------|-------------|
+| `go <url>` | Navigate to a URL |
+| `click <ref>` | Click element by ref (e.g. `click e5`) |
+| `fill <ref> <text>` | Fill an input field |
+| `snap` | Take and save a snapshot |
+| `screenshot` | Capture a PNG screenshot |
+| `ls` | Show page elements (links, buttons, inputs, headings) |
+| `links` | Show all links with URLs |
+| `history` | Show browsing session history |
+| `annotate <text>` | Add an annotation note |
+| `done` | Finish session and save profile |
+| `help` | Show available commands |
+
+**Example session:**
+```
+guide> click e5
+  Clicking [e5]...
+Page: Login
+URL: http://example.com/login
+
+  Links:
+    [e3] "Home" → /
+    [e7] "Register" → /register
+
+  Inputs:
+    [e10] "Username" (textbox)
+    [e12] "Password" (textbox)
+
+guide> fill e10 admin
+guide> fill e12 secret
+guide> click e15
+guide> annotate User should see dashboard after login
+guide> done
+```
+
+Session summaries are saved to `./artifacts/guided-session-<timestamp>.md`.
 
 ### `plan`
 
@@ -242,6 +318,7 @@ pw-cli-agent test --execute ./tests/test.spec.ts --profile ./my-session
 - `--execute <file>` — test file to execute
 - `--headed` — visible browser
 - `--retries <N>` — retry count (default: 3)
+- `--workers <N>` — parallel worker count (default: 4)
 - `--profile <path>` — browser profile for auth state (auto-detects `./auth-profile`)
 - `--url <url>` — target URL (falls back to `TARGET_URL`)
 
@@ -364,10 +441,10 @@ Session initializes from `.env` (`TARGET_URL`, `OPENCODE_MODEL`). Use `↑`/`↓
 |---------|-------------|-------------|
 | `check` | Verify environment and connectivity | `--url`, `--screenshot`, `--profile` |
 | `login` | Log in via Drush ULI, save browser profile | `--url`, `--user`, `--uli`, `--drush-cmd`, `--profile` |
-| `explore` | Open browser, navigate, capture snapshot (registers in explore registry) | `--url`, `--depth`, `--screenshot`, `--headed`, `--profile` |
-| `plan` | Generate test plan from snapshot via opencode (queries/explores registry) | `--url`, `--snapshot`, `--prompt`, `--prompt-file`, `--model`, `--search`, `--explore` |
-| `generate` | Generate test files from plans | `--plan`, `--extract`, `--codegen`, `--url`, `--headed` |
-| `test` | Execute Playwright test files | `--execute`, `--headed`, `--retries`, `--profile` |
+| `explore` | Open browser, navigate, capture snapshot (registers in explore registry) | `--url`, `--depth`, `--screenshot`, `--headed`, `--guide`, `--profile` |
+| `plan` | Generate test plan from snapshot via opencode (queries/explores registry) | `--url`, `--snapshot`, `--prompt`, `--prompt-file`, `--model`, `--search`, `--explore`, `--reference` |
+| `generate` | Generate test files from plans | `--plan`, `--extract`, `--codegen`, `--url`, `--headed`, `--reference` |
+| `test` | Execute Playwright test files | `--execute`, `--headed`, `--retries`, `--workers`, `--profile` |
 | `report` | Aggregate artifacts into summary report | `--format`, `--output` |
 | `skill` | Generate opencode skill files | `--output-dir`, `--agents` |
 | `autorun` | Loop: explore → plan → generate → test → heal | `--url`, `--headed`, `--prompt`, `--max-iterations`, `--resume`, `--profile` |
@@ -383,7 +460,7 @@ test-results/<test-dir>/screenshots/<test_name>_pass.png
 test-results/<test-dir>/screenshots/<test_name>_fail.png
 ```
 
-Screenshots are included in the test results directory (`artifacts/results/run-<timestamp>/test-results/`) after each test run. The hook is injected into:
+Screenshots are saved to `artifacts/results/run-<timestamp>/screenshots/` (flat directory). The hook is injected into:
 - **Extracted tests** — code blocks pulled from plan markdown via `test --extract`
 - **Generated tests** — opencode-generated `.spec.ts` files via `test --plan`
 
@@ -439,6 +516,104 @@ artifacts/explore-registry.json
 └── summary: "Links:\n  [e5] \"Login\" → /login\n  ..."
 ```
 
+## Site Profile
+
+A living document at `artifacts/site-profile.md` that accumulates knowledge about the website across all explore runs. Regenerated after each `explore` command and after guided sessions.
+
+The profile contains:
+
+| Section | Content |
+|---------|---------|
+| **Overview** | Base URL, pages explored, total elements/links, first/last explored timestamps |
+| **Discovered Pages** | Table of all explored URLs with titles, element counts, link counts |
+| **Navigation** | All discovered navigation links with URLs |
+| **Forms** | Pages with input fields — lists each input's name and type |
+| **Interactive Elements** | Buttons and actions found across the site |
+| **Content Headings** | All headings discovered across pages (site map) |
+| **Page Details** | Per-page breakdown with headings and metadata |
+
+The profile is useful for:
+- Understanding site structure before planning tests
+- Providing context to the AI planner (included automatically when the registry has multiple entries)
+- Reviewing what the tool knows about the site
+- Identifying untested areas
+
+## User References
+
+Provide user-authored test procedures and screenshots as reference material for the AI planner and generator. This is useful when you have:
+- Manual test scripts that need to be automated
+- Screenshots showing expected behavior
+- Step-by-step procedures from QA teams
+
+### Usage
+
+```bash
+# Single reference file
+pw-cli-agent plan --url http://example.com --reference ./my-test-procedure.md
+
+# Directory of references
+pw-cli-agent plan --url http://example.com --reference ./test-procedures/
+
+# With generate command
+pw-cli-agent generate --plan plan-123.md --reference ./test-procedures/
+```
+
+### Reference Format
+
+References can be markdown files with step-by-step instructions:
+
+```markdown
+# Login Test Procedure
+
+## Steps
+
+1. Navigate to the login page
+2. Enter username in the "Username" field
+3. Enter password in the "Password" field
+4. Click the "Login" button
+5. Verify the dashboard loads
+
+## Expected Results
+
+- User should see "Welcome, admin!" message
+- Navigation menu should be visible
+```
+
+Screenshots (PNG, JPG) in the same directory are automatically associated with the reference files.
+
+### How It Works
+
+1. The `--reference` flag loads markdown files and screenshots from the specified path
+2. Steps are extracted from headings (`##`, `###`) and numbered lists (`1.`, `2.`)
+3. The content is injected into the AI prompts as user-provided test procedures
+4. The AI uses these as the primary source for test steps and expected behavior
+
+### Reference Directory Structure
+
+```
+test-procedures/
+├── login-test.md          # Test procedure with steps
+├── checkout-flow.md       # Another test procedure
+├── login-screenshot.png   # Screenshot referenced by login-test.md
+└── expected-results.md    # Expected behavior documentation
+```
+
+The agent will load all `.md` files and associate any images in the same directory.
+
+## Locator Rules
+
+The AI planner and generator receive the raw accessibility snapshot from Playwright. The snapshot uses Playwright's accessibility tree roles which map **directly** to `getByRole()` — but the AI often misinterprets them. The prompts include explicit rules to prevent common failures:
+
+| Snapshot Role | Correct Locator | Common Mistake |
+|---------------|----------------|----------------|
+| `navigation "Tabs"` | `getByRole('navigation', { name: 'Tabs' })` | `getByRole('tablist')` |
+| `navigation "Toolbar items"` | `getByRole('navigation', { name: 'Toolbar items' })` | `getByRole('toolbar')` |
+| `columnheader` with `link "Updated Sort ascending"` | `getByRole('columnheader', { name: /Updated/ })` | `exact: true` with just `"Updated"` |
+| `option` inside `combobox` | `expect(select).toHaveValue(...)` | `expect(option).toBeVisible()` — options are never visible |
+| `link "X"` where `link "Edit X"` exists | `getByRole('link', { name: 'X', exact: true })` | `getByRole('link', { name: 'X' })` — strict mode violation |
+
+The element summary in generated plans includes Playwright locator hints (e.g. `[e5] "Login" → /login (getByRole('link', { name: 'Login' }))`).
+
 ## Architecture
 
 ```
@@ -446,7 +621,7 @@ pw-cli-agent
 ├── CLI Layer (Commander.js subcommands)
 │   ├── check    — verify playwright-cli + opencode + target site
 │   ├── login    — Playwright API: launchPersistentContext → ULI → storageState JSON
-│   ├── explore  — playwright-cli open --profile, navigate, snapshot → explore registry
+│   ├── explore  — playwright-cli open --profile, navigate, snapshot → explore registry + site profile
 │   ├── plan     — generate test plan from snapshots (queries registry, can trigger explore)
 │   ├── generate — create .spec.ts files from plans (extract / opencode / codegen)
 │   ├── test     — execute playwright tests (loads storageState JSON for auth)
@@ -485,6 +660,7 @@ agent/
     │   ├── check.ts                  # Environment verification
     │   ├── login.ts                  # Playwright API: ULI auth + storageState JSON export
     │   ├── explore.ts                # Browser exploration via playwright-cli + snapshots + registry
+    │   ├── guide.ts                  # Interactive guided browsing session (headed, records observations)
     │   ├── plan.ts                   # Test plan generation (registry query, multi-page explore)
     │   ├── generate.ts               # Test file creation (extract / opencode / codegen)
     │   ├── test.ts                   # Test execution + self-heal retries (loads storageState)
@@ -499,6 +675,7 @@ agent/
         ├── artifacts.ts              # Artifact directory management + code extraction
         ├── snapshot-parser.ts        # YAML snapshot → structured elements (refs, roles, links)
         ├── explore-registry.ts       # Searchable index of explore snapshots + metadata
+        ├── site-profile.ts           # Living site profile (accumulated knowledge from all explores)
         └── prompt-templates.ts       # Reusable prompt templates for opencode
 ```
 
@@ -587,6 +764,7 @@ External tools (installed in container):
 Internal modules:
 - `snapshot-parser.ts` — parses Playwright YAML snapshots into structured element data (refs, roles, links, headings, buttons)
 - `explore-registry.ts` — searchable index of explore snapshots with element metadata
+- `site-profile.ts` — living site profile regenerated from the explore registry after each run
 
 ## References
 
