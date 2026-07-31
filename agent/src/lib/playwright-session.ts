@@ -59,8 +59,9 @@ export class PlaywrightSession {
     return this.page;
   }
 
-  async launch(url: string, opts: { profile?: string; snapshotDepth?: number } = {}): Promise<void> {
+  async launch(url: string, opts: { profile?: string; snapshotDepth?: number; headless?: boolean } = {}): Promise<void> {
     const contextOptions: BrowserContextOptions = {};
+    const headless = opts.headless ?? false;
 
     const launchArgs: string[] = [];
 
@@ -76,7 +77,7 @@ export class PlaywrightSession {
         }
       } catch {}
       this.context = await (chromium as any).launchPersistentContext(opts.profile, {
-        headless: false,
+        headless,
         args: launchArgs,
         ...contextOptions,
       });
@@ -85,7 +86,7 @@ export class PlaywrightSession {
       this.page = pages.length > 0 ? pages[0] : await ctx.newPage();
     } else {
       this.browser = await chromium.launch({
-        headless: false,
+        headless,
         args: launchArgs,
       });
       this.context = await this.browser.newContext(contextOptions);
@@ -170,6 +171,27 @@ export class PlaywrightSession {
     if (!this.page) throw new Error('Session not started.');
     await this.page.locator(selector).fill(text);
     await this.page.waitForTimeout(200);
+  }
+
+  /**
+   * Reveals droplist-only controls before snapshotting. On content-add forms that
+   * use Drupal paragraphs, the block-type dropbuttons only exist after a section
+   * has been added — clicking the first N-Column Section button renders them.
+   */
+  async prepareForExploration(): Promise<void> {
+    if (!this.page) throw new Error('Session not started.');
+    try {
+      // Only auto-add a section on node-add forms; never modify an existing node
+      // during re-exploration (edit pages: /node/<id>/edit/...).
+      if (!this.page.url().includes('/node/add/')) return;
+      const sectionBtn = this.page.getByRole('button', { name: /^Add \d+-Column Section$/ }).first();
+      if (await sectionBtn.isVisible().catch(() => false)) {
+        await sectionBtn.click();
+        await this.page.waitForTimeout(1500);
+        await this.page.waitForLoadState('networkidle').catch(() => {});
+        await this.page.waitForTimeout(500);
+      }
+    } catch {}
   }
 
   async screenshot(filename?: string): Promise<string> {

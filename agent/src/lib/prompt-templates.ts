@@ -227,6 +227,7 @@ GENERAL RULES:
 - Use modern locators: getByRole(), getByText(), getByTestId()
 - Add proper async/await for all async operations
 - Include assertions for every test step
+- NEVER use test.describe.configure({ mode: 'serial' }) or test.describe.serial() — a failing test must NOT skip the remaining tests in the file. Dependent tests are still run in order (definition order), and the runner schedules cross-file dependencies. Every test must always execute so all failures are reported.
 - Use RELATIVE paths with page.goto() — e.g. page.goto('/node/add/page'). Do NOT define a BASE_URL constant. Playwright's baseURL from playwright.config.ts automatically prefixes relative paths.
 - Add a test.afterEach hook that takes a full-page screenshot on both pass and fail:
 
@@ -377,5 +378,5 @@ ${snapshotContent}
 FAILING TESTS (with error details, test source, and failure-time page snapshot):
 ${failureContext}
 ${originalPlanSection}
-Respond in markdown with a structured healing plan. Use proper markdown headings and code blocks for Playwright code snippets. Include a "Fixed Tests" section with the complete corrected .spec.ts code for ALL test cases (preserved passing tests AND fixed failing tests) — the complete file, not just the failing tests.`;
+Respond in markdown with a structured healing plan. Use proper markdown headings and code blocks for Playwright code snippets. Include a "Fixed Tests" section with the complete corrected .spec.ts code for ALL test cases (preserved passing tests AND fixed failing tests) — the complete file, not just the failing tests. Do NOT use test.describe.configure({ mode: 'serial' }) or test.describe.serial() in the code — every test must always execute so all failures are reported.`;
 }

@@ -155,7 +155,27 @@ function injectNavigation(code: string, url?: string): string {
   return lines.join('\n');
 }
 
+/**
+ * Removes Playwright serial mode from generated test code. Serial mode makes
+ * Playwright SKIP every remaining test in the file after the first failure,
+ * which would silently drop independent (no-dependency) test cases from a run
+ * and hide their failures from the healing stage. Dependency ordering is
+ * still guaranteed: within a file tests run in declaration order, and across
+ * files the runner uses dependency-ordered waves.
+ */
+function neutralizeSerialMode(code: string): string {
+  // test.describe.configure({ mode: 'serial' });  (single or multi-line object)
+  code = code.replace(
+    /test\.describe\.configure\(\s*\{[^}]*\bmode\s*:\s*['"]serial['"][^}]*\}\s*\)\s*;?/g,
+    ''
+  );
+  // test.describe.serial('...', () => {...})
+  code = code.replace(/test\.describe\.serial\s*\(/g, 'test.describe(');
+  return code;
+}
+
 export function wrapInTest(code: string, testName: string, url?: string): string {
+  code = neutralizeSerialMode(code);
   const hasImport = /import.*@playwright\/test/.test(code);
   const hasTest = /\b(?:test|it)\s*\(/.test(code);
   const hasAfterEach = /test\.afterEach/.test(code);
