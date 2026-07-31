@@ -8,7 +8,7 @@ import { planCommand } from './plan.js';
 import { extractTestsFromPlan, generateFromPlan } from './generate.js';
 import { runPlaywrightTest, saveTestResult, cleanupRunDir, RUN_DIR } from './test.js';
 import { healCommand } from './heal.js';
-import { ensureArtifactsDir, getLatestFile, wrapInTest } from '../lib/artifacts.js';
+import { ensureArtifactsDir, getLatestFile, wrapInTest, parsePlanTestCases, computeDependencyLevels, extractCodeBlocks } from '../lib/artifacts.js';
 import { Config, resolveProfile } from '../config.js';
 
 const execFileAsync = promisify(execFile);
@@ -27,6 +27,7 @@ interface AutorunState {
   planPath?: string;
   testFiles: string[];
   allPassed: boolean;
+  exploredUrls: string[];
   startedAt: string;
   updatedAt: string;
 }
@@ -117,8 +118,35 @@ async function doGenerate(planPath: string, url: string | undefined, config: Con
   return [testPath];
 }
 
-async function doTest(testFiles: string[], headed: boolean, config: Config, storageState?: string): Promise<boolean> {
+async function doTest(testFiles: string[], headed: boolean, config: Config, storageState?: string, planPath?: string): Promise<boolean> {
   step('Test');
+
+  // Map test files to dependency levels from the plan so dependent tests
+  // run after the tests they depend on (parallel within each level).
+  let fileLevels: Map<string, number> | undefined;
+  if (planPath) {
+    try {
+      const planContent = readFileSync(planPath, 'utf-8');
+      const testCases = parsePlanTestCases(planContent);
+      if (testCases.length > 0) {
+        const levels = computeDependencyLevels(testCases);
+        const blocks = extractCodeBlocks(planContent);
+        fileLevels = new Map();
+        for (const block of blocks) {
+          if (!block.testId) continue;
+          const level = levels.get(block.testId) ?? 0;
+          const match = testFiles.find(f => f.endsWith(block.filename));
+          if (match) fileLevels.set(match, level);
+        }
+        if (fileLevels.size === 0) fileLevels = undefined;
+      }
+    } catch {
+      fileLevels = undefined;
+    }
+  }
+  if (fileLevels) {
+    substep('Tests have dependencies — running in dependency-ordered waves (parallel within each wave)');
+  }
 
   // Create a single run directory for all tests in this iteration
   const resultsDir = join(config.outputDir, 'results');
@@ -133,7 +161,7 @@ async function doTest(testFiles: string[], headed: boolean, config: Config, stor
   mkdirSync(RUN_DIR, { recursive: true });
 
   try {
-    const result = await runPlaywrightTest(testFiles, headed, undefined, storageState);
+    const result = await runPlaywrightTest(testFiles, headed, undefined, storageState, undefined, undefined, fileLevels);
     console.log(result.output);
 
     // Save combined result under each test file for compatibility
@@ -151,7 +179,7 @@ async function doTest(testFiles: string[], headed: boolean, config: Config, stor
   }
 }
 
-async function doHeal(url: string | undefined, headed: boolean, config: Config, snapshotPath?: string, profile?: string, testFiles?: string[]): Promise<string> {
+async function doHeal(url: string | undefined, headed: boolean, config: Config, snapshotPath?: string, profile?: string, testFiles?: string[], planPath?: string): Promise<string> {
   step('Heal');
   const result = await healCommand({
     url,
@@ -161,6 +189,7 @@ async function doHeal(url: string | undefined, headed: boolean, config: Config, 
     profile,
     config,
     testFiles,
+    planPath,
   });
 
   if (result.failureCount === 0) {
@@ -231,6 +260,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
       profile: opts.profile,
       testFiles: [],
       allPassed: false,
+      exploredUrls: [],
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -249,9 +279,10 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
   }
 
   try {
-    // ── Explore (once, unless resuming past it) ──────────────────
+    // ── Explore initial URL (planner will request additional pages) ──
     if (state.step === 'explore') {
       state.snapshotPath = await doExplore(state.url, state.headed, config, profile);
+      state.exploredUrls.push(state.url);
       state.step = 'plan';
       saveState(state);
     }
@@ -265,11 +296,11 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
       // Heal (if resuming from heal step or after test failure)
       if (state.step === 'heal') {
         if (state.iteration < state.maxIterations) {
-          const healPlanPath = await doHeal(state.url, state.headed, config, state.snapshotPath, state.profile, state.testFiles);
+          const healPlanPath = await doHeal(state.url, state.headed, config, state.snapshotPath, state.profile, state.testFiles, state.planPath);
           if (healPlanPath) {
             state.planPath = healPlanPath;
           }
-          state.step = 'plan';
+          state.step = 'generate';
           state.iteration++;
           saveState(state);
         } else {
@@ -309,7 +340,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
 
       // Test
       if (state.step === 'test') {
-        state.allPassed = await doTest(state.testFiles, state.headed, config, profile);
+        state.allPassed = await doTest(state.testFiles, state.headed, config, profile, state.planPath);
         saveState(state);
 
         if (state.allPassed) {
@@ -321,11 +352,11 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
       // Heal (if not last iteration)
       if (state.iteration < state.maxIterations) {
         if (state.step === 'test' || state.step === 'heal') {
-          const healPlanPath = await doHeal(state.url, state.headed, config, state.snapshotPath, state.profile, state.testFiles);
+          const healPlanPath = await doHeal(state.url, state.headed, config, state.snapshotPath, state.profile, state.testFiles, state.planPath);
           if (healPlanPath) {
             state.planPath = healPlanPath;
           }
-          state.step = 'plan';
+          state.step = 'generate';
           state.iteration++;
           saveState(state);
         }

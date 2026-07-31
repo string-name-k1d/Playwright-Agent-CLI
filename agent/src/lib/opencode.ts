@@ -1,7 +1,4 @@
 import { spawn, type SpawnOptions } from 'node:child_process';
-import { writeFileSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 
@@ -118,24 +115,83 @@ async function opencodeViaCli(
   prompt: string,
   opts: OpenCodeOptions
 ): Promise<OpenCodeResult> {
-  const args: string[] = ['run'];
+  const baseArgs: string[] = ['run'];
 
-  args.push('--format', 'json');
-  if (opts.model) args.push('-m', opts.model);
-  if (opts.session) args.push('-s', opts.session);
+  baseArgs.push('--format', 'json');
+  if (opts.model) baseArgs.push('-m', opts.model);
 
-  const LARGE_PROMPT_THRESHOLD = 8000;
-  let tmpFile: string | null = null;
+  // Pass the prompt inline as the message. Inline prompts keep the model focused
+  // on answering (no tool exploration), whereas --file attachment mode can make
+  // the model go agentic (running bash/read tools) and sometimes emit no text.
+  // For prompts too large for a single command-line argument (~128KB per-arg
+  // limit on Linux), split the prompt into batches and continue the session
+  // between batches so the model retains the full context.
+  const BATCH_SIZE = 100_000;
 
-  if (prompt.length > LARGE_PROMPT_THRESHOLD) {
-    tmpFile = join(tmpdir(), `pw-prompt-${Date.now()}.txt`);
-    writeFileSync(tmpFile, prompt, 'utf-8');
-    args.push('Analyze the attached file and respond accordingly.');
-    args.push('--file', tmpFile);
-  } else {
-    args.push(prompt);
+  if (prompt.length <= BATCH_SIZE) {
+    return runOpencodeCli([...baseArgs, prompt], opts);
   }
 
+  const chunks = splitPrompt(prompt, BATCH_SIZE);
+  let sessionId: string | undefined;
+  let last: OpenCodeResult = { output: '', exitCode: 1, structured: undefined };
+
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    const partLabel =
+      `[Part ${i + 1}/${chunks.length} — ` +
+      (isLast
+        ? 'FINAL PART. You now have the complete context. Produce your full response now.]\n\n'
+        : 'continuation of the context. Read carefully. Do NOT produce your final answer yet — more content follows.]\n\n');
+
+    const args = [...baseArgs];
+    if (sessionId) args.push('-s', sessionId);
+    args.push(partLabel + chunks[i]);
+
+    const result = await runOpencodeCli(args, opts);
+    last = result;
+
+    if (result.exitCode !== 0) {
+      break;
+    }
+    if (!sessionId) {
+      sessionId = extractSessionId(result.output);
+      if (!sessionId) {
+        console.error('  Could not determine session id for batched prompt continuation');
+        break;
+      }
+    }
+  }
+
+  return last;
+}
+
+function extractSessionId(output: string): string | undefined {
+  const m = output.match(/"sessionID":"(ses_[^"]+)"/);
+  return m ? m[1] : undefined;
+}
+
+function splitPrompt(prompt: string, chunkSize: number): string[] {
+  if (prompt.length <= chunkSize) return [prompt];
+  const parts: string[] = [];
+  let current = '';
+  for (const line of prompt.split('\n')) {
+    const next = current ? `${current}\n${line}` : line;
+    if (current && next.length > chunkSize) {
+      parts.push(current);
+      current = line;
+    } else {
+      current = next;
+    }
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+function runOpencodeCli(
+  args: string[],
+  opts: OpenCodeOptions
+): Promise<OpenCodeResult> {
   return new Promise((resolve) => {
     const child = spawn('opencode', args, {
       cwd: opts.cwd ?? process.cwd(),
@@ -147,7 +203,6 @@ async function opencodeViaCli(
     let stderr = '';
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      if (tmpFile) try { unlinkSync(tmpFile); } catch {}
       resolve({
         output: stdout.trim(),
         exitCode: 124,
@@ -165,7 +220,6 @@ async function opencodeViaCli(
 
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (tmpFile) try { unlinkSync(tmpFile); } catch {}
       const output = stdout.trim();
       const errOutput = stderr.trim();
       let structured: any;
@@ -183,7 +237,6 @@ async function opencodeViaCli(
 
     child.on('error', () => {
       clearTimeout(timer);
-      if (tmpFile) try { unlinkSync(tmpFile); } catch {}
       resolve({
         output: '',
         exitCode: 1,
@@ -215,9 +268,10 @@ export async function opencodeRun(
     // Success or non-retryable error
     if (result.exitCode === 0 || attempt === maxRetries) return result;
 
-    // Check if error is retryable (401, network errors, empty output)
+    // Check if error is retryable (401, network errors, timeouts, empty output)
     const combined = result.output.toLowerCase();
     const isRetryable =
+      result.exitCode === 124 || // our SIGTERM timeout marker
       combined.includes('401') ||
       combined.includes('no provider available') ||
       combined.includes('timed out') ||
@@ -271,14 +325,17 @@ export function extractStructuredOutput(result: OpenCodeResult): any {
     return result.structured.output;
   }
   // opencode --format json outputs one JSON event per line
-  // Extract text content from type:"text" events
+  // Extract text content from type:"text" events (part.type "text" too)
   const lines = result.output.split('\n').filter(l => l.trim());
   const textParts: string[] = [];
+  let sawJsonEvent = false;
   for (const line of lines) {
     try {
       const event = JSON.parse(line);
-      if (event.type === 'text' && event.part?.text) {
-        textParts.push(event.part.text);
+      sawJsonEvent = true;
+      const part = event?.part;
+      if ((event.type === 'text' || part?.type === 'text') && typeof part?.text === 'string') {
+        textParts.push(part.text);
       }
     } catch {
       // Not JSON or unparseable — include as-is
@@ -286,6 +343,12 @@ export function extractStructuredOutput(result: OpenCodeResult): any {
   }
   if (textParts.length > 0) {
     return textParts.join('\n');
+  }
+  if (sawJsonEvent) {
+    // JSON events present but no text parts (e.g. tool-call-only run).
+    // Return the raw lines so extractMarkdown keeps any non-JSON content and
+    // callers can diagnose why the model produced no answer.
+    return lines.join('\n');
   }
   return result.output;
 }
@@ -301,9 +364,14 @@ export function extractMarkdown(result: OpenCodeResult): string {
     const trimmed = line.trim();
     // Skip JSON event lines (opencode format: {"type":"...","part":{...}})
     if (trimmed.startsWith('{') && trimmed.includes('"type"') && trimmed.includes('"part"')) continue;
-    // Skip empty lines only if we haven't started content yet
     clean.push(line);
   }
 
-  return clean.join('\n').trim();
+  const joined = clean.join('\n').trim();
+  if (joined) return joined;
+
+  // Everything was stripped (only JSON events, no text content).
+  // Return the raw output so callers see the actual agent response instead of
+  // silently collapsing to an empty string.
+  return raw;
 }

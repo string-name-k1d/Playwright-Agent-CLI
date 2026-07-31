@@ -40,40 +40,83 @@ export function plannerPrompt(
   requirements?: string,
   referenceContent?: string
 ): string {
+  const requirementsSection = requirements
+    ? `\n\n## Requirements / Targets to Test (MANDATORY — COVER EVERY ITEM)\n${requirements}\n\nYour test plan MUST cover every requirement above. Map each requirement to at least one test case (TC-N).\n- If a requirement needs a page NOT in the snapshots below, add it to "## Pages to Explore" so the system explores it — do NOT skip or guess.\n- Prefer concrete, executable requirements over generic ones.`
+    : '';
+  const referenceSection = referenceContent
+    ? `\n\n## User-Provided Reference Procedures (primary source for steps)\n${referenceContent}\n\nIMPORTANT: Use the user-provided test procedures above as the primary source for test steps and expected behavior.`
+    : '';
   const contextSection = context
     ? `\n\nADDITIONAL CONTEXT (element maps, multi-page snapshots, site structure):\n${context}`
     : '';
-  const requirementsSection = requirements
-    ? `\n\nREQUIREMENTS / TARGETS TO TEST:\n${requirements}\n\nFocus your test plan on the above requirements. Cover each requirement with at least one test case.`
-    : '';
-  const referenceSection = referenceContent
-    ? `\n\n${referenceContent}\n\nIMPORTANT: Use the user-provided test procedures above as the primary source for test steps and expected behavior.`
-    : '';
 
   return `You are a Playwright test planner. Given accessibility snapshots of web page(s), create a structured test plan.
+${requirementsSection}
+${referenceSection}
+
+You MUST follow the EXACT format below with no variations. Every plan must start with ## Objective as the first line.
+
+## Required Format
+
+\`\`\`
+## Objective
+<Single paragraph describing the overall goal of this test plan — what pages are tested and what user flows are covered.>
+
+## Pages
+- <URL> — <description of the page's role in the plan>
+- <URL> — <description>
+
+## Test Cases
+
+### TC-1: <kebab-case-test-name>
+- **Priority:** high|medium|low
+- **Dependencies:** standalone | depends: TC-NAME | requires: <description>
+- **Description:** <one-line description of what this test verifies>
+- **Steps:**
+  1. <action — describe element and action, include locator hint>
+  2. <action>
+- **Expected:** <what should happen after the steps>
+
+### TC-2: <kebab-case-test-name>
+- **Priority:** high|medium|low
+- **Dependencies:** standalone | depends: TC-1 | requires: <description>
+- **Description:** <...>
+- **Steps:**
+  1. <...>
+- **Expected:** <...>
+\`\`\`
+
+## Format Rules
 
 OUTPUT RULES:
 - Do NOT include any preamble, introduction, or conversational text before the plan.
 - Do NOT write "I'll analyze..." or "Let me first..." or "Here is the plan..." — jump straight into the structured plan.
-- The VERY FIRST line of your response must be a markdown heading (## Objective, ## Test Plan, ## Summary, etc.).
-- Every response must contain markdown headings, test case descriptions, and code blocks with Playwright snippets.
+- The VERY FIRST line of your response MUST be: ## Objective
+- Every test case must have exactly one Priority, Dependencies, Description, Steps, and Expected field.
+- Use the exact field names: **Priority:**, **Dependencies:**, **Description:**, **Steps:**, **Expected:**
+- Number the test cases TC-1, TC-2, TC-3, etc.
+- Use kebab-case for test names (e.g. "create-basic-page", "edit-existing-page").
+- Prefix URLs with / for same-origin paths.
 
-The test plan should include:
-1. Page title and URL
-2. Summary of page functionality
-3. Individual test cases with:
-   - Test name
-   - Precondition labels (e.g. [depends: test-name], [requires: setup-name])
-   - Steps (describe the element and action, e.g. "Click the 'Home' link in the breadcrumb")
-   - Expected results
-   - Priority (high/medium/low)
+EXPLORATION ANNOTATIONS:
+- If a test case requires visiting a page that has NOT been provided as a snapshot above, add a "## Pages to Explore" section at the end of your plan listing each URL:
+  ## Pages to Explore
+  - [explore: /admin/content] — Content listing for "Edit Content" test
+  - [explore: /node/add/page] — Add page form for "Create Page" test
+- The system will automatically open each URL, capture its accessibility snapshot, and re-invoke you with the expanded context.
+- Do NOT guess element refs or page structure for un-explored pages. Instead, list them for exploration.
+- Use [explore: URL] for:
+  - Pages reachable via links in the current snapshot that form part of a test flow
+  - Form submission targets (after creating content, where does the user land?)
+  - Admin pages needed for test setup (login, content admin, etc.)
+  - A page.goto() target in any test case that does not already have a snapshot provided
 
 DEPENDENCY RULES:
 - If a test requires another test to run first (e.g. CRUD operations: Create before Read/Update/Delete), add a [depends: test-name] label
 - If a test requires page setup (e.g. navigating to a specific URL, having an element visible), add [requires: setup-name]
 - Group related tests together so dependencies are clear
 - Mark tests that can run independently as [standalone]
-- Example: "Create Page [depends: none]" → "View Page [depends: create-page]" → "Update Page [depends: create-page]" → "Delete Page [depends: create-page]"
+- Example: "standalone" → "depends: create-page" → "depends: create-page" → "depends: create-page"
 
 IMPORTANT:
 - Element refs like [ref=e12] are ONLY for your reference when reading the snapshot. Do NOT use them as locators in test code.
@@ -99,8 +142,6 @@ URL RULES:
 SNAPSHOT:
 ${snapshotContent}
 ${contextSection}
-${requirementsSection}
-${referenceSection}
 
 Respond in markdown with a structured test plan. Use proper markdown headings and code blocks for Playwright code snippets.`;
 }
@@ -254,21 +295,62 @@ Respond with:
  */
 export function healerPlanPrompt(
   snapshotContent: string,
-  failureContext: string
+  failureContext: string,
+  originalPlan?: string
 ): string {
+  const originalPlanSection = originalPlan
+    ? `\nORIGINAL TEST PLAN (ALL test cases — passing and failing):
+${originalPlan}
+`
+    : '';
+
   return `You are a Playwright test healer. Multiple tests are failing against a web page. You have a fresh accessibility snapshot of the page and the failure details.
+
+You MUST produce a healing plan in the SAME standardized format as the original plan. The format is:
+
+\`\`\`
+## Objective
+<Brief description of the healing plan — what was failing and what was fixed.>
+
+## Pages
+- <URL> — <description>
+
+## Test Cases
+
+### TC-1: <kebab-case-test-name>
+- **Priority:** high|medium|low
+- **Dependencies:** standalone | depends: TC-NAME | requires: <description>
+- **Description:** <one-line description>
+- **Steps:**
+  1. <action with locator>
+- **Expected:** <expected outcome>
+\`\`\`
 
 Your job:
 1. Analyze each failure — understand what the test expected vs what the page actually contains
 2. Each failure includes: the error message, the FULL test source with line numbers, and the page accessibility snapshot at the exact moment of failure
 3. Compare the failing selectors/locators against the FRESH snapshot to find the correct element refs
 4. Generate a NEW test plan that:
-   - Keeps the same test intent (what each test was trying to verify)
+   - KEEPS every test case from the original plan that is NOT listed as failing below — those tests PASSED and must be preserved EXACTLY as-is (same test name, priority, dependencies, description, steps, expected results, and code snippet). Do NOT rewrite, renumber, or reorder them.
+   - Fixes ONLY the failing tests listed below (keep the same test intent, correct the selectors/assertions)
    - Uses correct selectors/locators from the FRESH snapshot
    - Marks tests as test.fixme() if the failure is an app bug (not a test issue)
    - Includes Playwright code snippets for each test case
    - Preserves dependency labels from the original plan ([depends:], [requires:], [standalone])
    - Groups dependent tests in test.describe() blocks with shared beforeAll() setup
+   - If the fix requires visiting a new URL not yet in the snapshots above, add: [re-explore: URL] in the plan section
+   - Follows the exact format: ## Objective, ## Pages, ## Test Cases, ### TC-N: <name> with bold field labels
+   - CRITICAL: Your healing plan MUST include EVERY test case from the original plan (preserved passing tests AND fixed failing tests) — never drop a passing test case
+
+RE-EXPLORATION ANNOTATIONS:
+- If a test fails because the page was not explored (missing snapshot), or the failure involves navigating to a different URL that wasn't captured, add a "## Pages to Re-Explore" section:
+  ## Pages to Re-Explore
+  - [re-explore: /admin/content] — Fresh snapshot needed for content page
+- The system will re-explore each URL and re-invoke you with fresh snapshots.
+- Use [re-explore: URL] when the error suggests:
+  - An element exists on a different page than the one in the snapshot
+  - The page structure changed significantly (navigation, layout shift)
+  - A previous page.goto() target wasn't included in the exploration
 
 For each test failure, explain:
 - What went wrong (selector mismatch, missing element, wrong assertion, etc.)
@@ -294,6 +376,6 @@ ${snapshotContent}
 
 FAILING TESTS (with error details, test source, and failure-time page snapshot):
 ${failureContext}
-
-Respond in markdown with a structured healing plan. Use proper markdown headings and code blocks for Playwright code snippets. Include a "Fixed Tests" section with the complete corrected .spec.ts code.`;
+${originalPlanSection}
+Respond in markdown with a structured healing plan. Use proper markdown headings and code blocks for Playwright code snippets. Include a "Fixed Tests" section with the complete corrected .spec.ts code for ALL test cases (preserved passing tests AND fixed failing tests) — the complete file, not just the failing tests.`;
 }

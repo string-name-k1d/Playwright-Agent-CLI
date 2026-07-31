@@ -12,9 +12,16 @@ artifacts/
 
 # Playwright generated dirs
 playwright-report/
-tests/
 test-results/
 run/
+
+# Auto-generated Playwright config (recreated by `test` / `autorun`)
+playwright.config.ts
+
+# Generated test specs (root level + tests/)
+tests/
+/*.spec.ts
+/*.png
 
 # Stale snapshots leaked to root
 **/explore-*.yaml

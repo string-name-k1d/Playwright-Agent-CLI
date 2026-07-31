@@ -63,7 +63,8 @@ program
   .option('--depth <N>', 'Snapshot tree depth', parseInt)
   .option('--screenshot', 'Also capture a PNG screenshot')
   .option('--headed', 'Show browser window')
-  .option('--guide', 'Interactive guided browsing session (headed)')
+  .option('--guide', 'Interactive guided browsing session (headed, codegen mode by default)')
+  .option('--repl', 'Use REPL mode instead of codegen (manual commands)')
   .option('--profile <path>', 'Persistent browser profile for saved login state')
   .action(async (opts) => {
     const parent = program.opts();
@@ -71,12 +72,12 @@ program
     const url = opts.url ?? config.targetUrl;
 
     if (opts.guide) {
-      // Interactive guided session — always headed (requires display)
       await guideCommand({
         url,
         headed: true,
         profile: opts.profile,
         config,
+        repl: opts.repl,
       });
       return;
     }

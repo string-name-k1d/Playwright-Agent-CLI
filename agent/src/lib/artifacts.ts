@@ -97,6 +97,7 @@ export function listArtifacts(subdir: string, baseDir: string = './artifacts'): 
 export interface ExtractedCode {
   filename: string;
   code: string;
+  testId?: string;
 }
 
 const SCREENSHOT_HOOK = `
@@ -190,19 +191,22 @@ const PREAMBLE_PATTERNS = [
 ];
 
 const STRUCTURE_INDICATORS = [
-  /#{2,4}\s+(?:Test\s+Case|TC[\s\-]|Test\s*\d|Scenario|Flow|Feature|E2E|Unit|Integration|Smoke|Regression|Functional|Acceptance)/i,
-  /#{2,4}\s+(?:Objective|Goal|Summary|Overview|Context|Background|Scope|Requirements?|Prerequisites?|Pre-?conditions?)/i,
-  /#{2,4}\s+(?:Step|Action|Verification|Expected\s+Result|Priority|Test\s+Plan|Test\s+Strategy)/i,
-  /#{2,4}\s+(?:Page|Form|Section|Component|Feature|Module|Screen)/i,
+  /#{2,4}\s+TC[\s\-:]/i,
+  /#{2,4}\s+(?:Objective|Goal|Summary|Overview|Context|Background|Scope)/i,
+  /#{2,4}\s+(?:Test\s+Cases?|Test\s+Plan|Test\s+Strategy|Healing\s+Plan|Pages?)/i,
+  /#{2,4}\s+(?:Steps?|Actions?|Expected\s+Results?|Priority|Requirements?)/i,
 ];
 
 const STRUCTURE_CONTENT_PATTERNS = [
-  /(?:Test\s+(?:Name|ID|Title|Case|Number|Priority))\s*[:\-]/i,
-  /(?:Pre-?conditions?|Preconditions?|Given)\s*[:\-]/i,
-  /(?:Steps?|Actions?|Procedure|When)\s*[:\-]/i,
-  /(?:Expected\s+Result|Expected\s+Behavior|Then|Assertions?)\s*[:\-]/i,
-  /(?:Priority)\s*[:\-]\s*(?:high|medium|low|p[01234]|critical)/i,
-  /(?:Step\s+\d|Action\s+\d|\d+\.\s+(?:Click|Fill|Type|Select|Navigate|Verify|Check|Assert|Press|Wait|Open|Submit|Toggle|Choose|Hover|Drag))/i,
+  /#{2,4}\s+Objective/i,
+  /#{2,4}\s+Pages/i,
+  /#{2,4}\s+Test\s+Cases?/i,
+  /###\s+TC-\d+:\s+\S+/,
+  /\*\*Priority:\*\*\s*(?:high|medium|low)/i,
+  /\*\*Dependencies:\*\*\s*/i,
+  /\*\*Description:\*\*\s*/i,
+  /\*\*Steps:\*\*\s*/i,
+  /\*\*Expected:\*\*\s*/i,
 ];
 
 /**
@@ -299,17 +303,21 @@ export function extractCodeBlocks(markdown: string, url?: string): ExtractedCode
       const beforeMatch = markdown.substring(0, match.index);
       const beforeLines = beforeMatch.split('\n');
       let testName = `test-${blockIndex}`;
+      let testId: string | undefined;
       for (let i = beforeLines.length - 1; i >= 0; i--) {
         const line = beforeLines[i];
         if (/^#{1,4}\s+/.test(line)) {
-          testName = line.replace(/^#{1,4}\s+/, '').trim();
+          const heading = line.replace(/^#{1,4}\s+/, '').trim();
+          testName = heading;
+          const tcMatch = heading.match(/^TC-(\d+)/i);
+          if (tcMatch) testId = `TC-${tcMatch[1]}`;
           break;
         }
       }
 
       const wrappedCode = wrapInTest(code, testName, url);
       const filename = `test-${blockIndex}.spec.ts`;
-      blocks.push({ filename, code: wrappedCode });
+      blocks.push({ filename, code: wrappedCode, testId });
       blockIndex++;
     }
   }
@@ -331,4 +339,101 @@ export function saveExtractedTests(
   }
 
   return saved;
+}
+
+// ── Plan test-case dependencies ───────────────────────────────────
+
+export interface PlanTestCase {
+  id: string;
+  name: string;
+  dependencies: string[];
+}
+
+/**
+ * Parses a plan markdown document for its test cases and their
+ * dependency references. Dependencies may be expressed as TC ids
+ * ("depends: TC-1") or as kebab-case test names ("depends: create-page").
+ * Name references are resolved to TC ids when a matching heading exists.
+ */
+export function parsePlanTestCases(markdown: string): PlanTestCase[] {
+  const cases: PlanTestCase[] = [];
+  const idByName = new Map<string, string>();
+
+  let current: PlanTestCase | null = null;
+  let currentName = '';
+
+  const finalize = (): void => {
+    if (!current) return;
+    current.dependencies = current.dependencies.map(d => idByName.get(d.toLowerCase()) ?? d);
+    cases.push(current);
+    current = null;
+  };
+
+  for (const line of markdown.split('\n')) {
+    const heading = line.match(/^#{1,6}\s*TC-(\d+)\s*[:：]?\s*(.*)$/i);
+    if (heading) {
+      finalize();
+      const id = `TC-${heading[1]}`;
+      currentName = heading[2].trim().toLowerCase();
+      current = { id, name: currentName, dependencies: [] };
+      idByName.set(id.toLowerCase(), id);
+      if (currentName) idByName.set(currentName, id);
+      continue;
+    }
+    if (!current) continue;
+    if (/^#{1,6}\s+/.test(line)) {
+      finalize();
+      continue;
+    }
+    const depMatch = line.match(/^\s*[-*]?\s*\*\*Dependencies:\*\*\s*(.*)$/i);
+    if (!depMatch) continue;
+
+    const value = depMatch[1].toLowerCase();
+    if (value.includes('standalone')) {
+      current.dependencies = [];
+      continue;
+    }
+    const tcRefs = [...value.matchAll(/TC-\d+/gi)].map(m => m[0].toUpperCase());
+    const dependsPart = value.split('depends:')[1];
+    let nameRefs: string[] = [];
+    if (dependsPart) {
+      nameRefs = dependsPart
+        .split(/[,&]|\band\b/g)
+        .map(s => s.trim().replace(/[^a-z0-9-]/g, ''))
+        .filter(s => s.length > 0 && !/^TC-\d+$/i.test(s));
+    }
+    current.dependencies = [...new Set([...tcRefs, ...nameRefs])];
+  }
+  finalize();
+
+  return cases;
+}
+
+/**
+ * Computes a topological "wave" level for each test case using its
+ * dependencies. Level 0 = no dependencies; level N runs only after all
+ * its transitive dependencies at levels < N have completed.
+ */
+export function computeDependencyLevels(cases: PlanTestCase[]): Map<string, number> {
+  const levels = new Map<string, number>();
+  const byId = new Map(cases.map(c => [c.id, c]));
+  const visited = new Set<string>();
+
+  const compute = (id: string): number => {
+    if (visited.has(id)) return levels.get(id) ?? 0;
+    visited.add(id);
+    const tc = byId.get(id);
+    if (!tc) return 0;
+    let level = 0;
+    for (const dep of tc.dependencies) {
+      if (/^TC-\d+$/i.test(dep)) {
+        level = Math.max(level, compute(dep) + 1);
+      }
+    }
+    levels.set(id, level);
+    return level;
+  };
+
+  for (const c of cases) compute(c.id);
+  return levels;
 }

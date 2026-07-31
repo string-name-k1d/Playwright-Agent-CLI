@@ -36,7 +36,7 @@ export async function generateFromPlan(
   const prompt = generatorPrompt(planContent, context, referenceContent);
   const result = await opencodeRun(prompt, {
     model: config.opencodeModel,
-    timeout: 120000,
+    timeout: 300000,
   });
 
   const output = extractStructuredOutput(result);

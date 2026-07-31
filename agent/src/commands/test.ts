@@ -1,6 +1,6 @@
 import chalk from 'chalk';
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileSync, readdirSync, rmSync, renameSync } from 'node:fs';
+import { join, basename } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { opencodeRun, extractStructuredOutput } from '../lib/opencode.js';
@@ -184,6 +184,7 @@ export async function runPlaywrightTest(
   storageState?: string,
   retries?: number,
   workers?: number,
+  fileLevels?: Map<string, number>,
 ): Promise<TestResult> {
   cleanupRunDir();
   mkdirSync(RUN_DIR, { recursive: true });
@@ -191,6 +192,68 @@ export async function runPlaywrightTest(
   ensurePlaywrightConfig(targetUrl, storageState);
 
   const files = Array.isArray(file) ? file : [file];
+
+  // When dependency levels are provided, run files in waves: files at the
+  // same level run in parallel, but a wave starts only after every lower
+  // level (the tests it depends on) has finished.
+  if (fileLevels && fileLevels.size > 0) {
+    const groups = new Map<number, string[]>();
+    for (const f of files) {
+      const level = fileLevels.get(f) ?? 0;
+      if (!groups.has(level)) groups.set(level, []);
+      groups.get(level)!.push(f);
+    }
+    const sortedLevels = [...groups.keys()].sort((a, b) => a - b);
+    const outputs: string[] = [];
+    let passed = true;
+    let waveIndex = 0;
+
+    for (const level of sortedLevels) {
+      const groupFiles = groups.get(level)!;
+      const waveDir = join(RUN_DIR, `wave-${waveIndex}`);
+      const args = ['playwright', 'test', ...groupFiles, '--reporter=list,html', `--output=${waveDir}`];
+      if (headed) args.push('--headed');
+      if (retries && retries > 0) args.push(`--retries=${retries}`);
+      if (workers && workers > 0) args.push(`--workers=${workers}`);
+
+      const header = `\n=== Wave ${level} — ${groupFiles.length} file(s): ${groupFiles.map(f => basename(f)).join(', ')} ===\n`;
+      let waveOutput: string;
+      try {
+        const { stdout, stderr } = await execFileAsync('npx', args, {
+          timeout: 120000,
+          maxBuffer: 10 * 1024 * 1024,
+          env: { ...process.env, PLAYWRIGHT_HTML_REPORT: join(RUN_DIR, `playwright-report-${waveIndex}`) },
+        });
+        waveOutput = stdout + stderr;
+      } catch (err: any) {
+        passed = false;
+        waveOutput = (err.stdout ?? '') + (err.stderr ?? '') + (err.message ?? '');
+      }
+      outputs.push(header + waveOutput);
+      waveIndex++;
+    }
+
+    // Merge per-wave test-results back into the standard RUN_DIR/test-results
+    // layout so saveTestResult / parseFailures keep working unchanged.
+    const mergedDir = join(RUN_DIR, 'test-results');
+    mkdirSync(mergedDir, { recursive: true });
+    for (let i = 0; i < waveIndex; i++) {
+      const waveResults = join(RUN_DIR, `wave-${i}`, 'test-results');
+      if (!existsSync(waveResults)) continue;
+      for (const entry of readdirSync(waveResults).filter(d => !d.startsWith('.'))) {
+        const dest = join(mergedDir, entry);
+        if (existsSync(dest)) continue;
+        try {
+          renameSync(join(waveResults, entry), dest);
+        } catch {
+          // Ignore individual move failures; keep whatever was already merged
+        }
+      }
+    }
+
+    return { passed, output: outputs.join('\n') };
+  }
+
   const args = ['playwright', 'test', ...files, '--reporter=list,html', '--output=run/test-results'];
   if (headed) args.push('--headed');
   if (retries && retries > 0) args.push(`--retries=${retries}`);
