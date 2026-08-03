@@ -12,6 +12,8 @@ import { replCommand } from './commands/repl.js';
 import { autorunCommand } from './commands/autorun.js';
 import { healCommand } from './commands/heal.js';
 import { loginCommand } from './commands/login.js';
+import { uiCommand } from './commands/ui.js';
+import { profileTree, profileQuery, profileRef, profilePages, profileList, profileMap } from './commands/profile.js';
 
 const program = new Command();
 
@@ -97,6 +99,94 @@ program
   });
 
 program
+  .command('ui')
+  .description('Run the Playwright UI (interactive test runner) on the container display')
+  .option('--execute <file>', 'Specific test file/directory to open (default: generated tests)')
+  .option('--url <url>', 'Target URL (falls back to TARGET_URL env / config)')
+  .option('--profile <path>', 'Browser profile for auth state (auto-detects ./auth-profile)')
+  .option('--ui-host <host>', 'Host to serve the UI panel on (default: 0.0.0.0)')
+  .option('--ui-port <port>', 'Port to serve the UI panel on (default: 8123; 0 = any free port)')
+  .action(async (opts) => {
+    const parent = program.opts();
+    const config = resolveConfig({ storageState: opts.profile }, parent.config);
+    process.exit(await uiCommand({
+      execute: opts.execute,
+      url: opts.url ?? config.targetUrl,
+      profile: opts.profile,
+      uiHost: opts.uiHost,
+      uiPort: opts.uiPort,
+      config,
+    }));
+  });
+
+const profileCmd = program
+  .command('profile')
+  .description('Inspect per-website profiles: element trees, registry queries, refs')
+  .option('--url <url>', 'Target URL (falls back to TARGET_URL env / config)');
+
+profileCmd
+  .command('tree')
+  .description('Show the hierarchical element tree for a page')
+  .argument('[url]', 'Page URL (defaults to TARGET_URL)')
+  .option('--include-text', 'Include text nodes in the tree')
+  .action(async (url, opts) => {
+    const parent = program.opts();
+    const config = resolveConfig({}, parent.config);
+    profileTree({ url: url ?? opts.url ?? config.targetUrl, includeText: opts.includeText, config });
+  });
+
+profileCmd
+  .command('query')
+  .description('Look up elements in the registry (by name, role, ref, or free text)')
+  .argument('<query>', 'Search query')
+  .argument('[url]', 'Restrict results to a page URL')
+  .action(async (query, url, opts) => {
+    const parent = program.opts();
+    const config = resolveConfig({}, parent.config);
+    profileQuery(query, url, { url: url ?? opts.url ?? config.targetUrl, config });
+  });
+
+profileCmd
+  .command('ref')
+  .description('Show hierarchy path + locator for an [eN] ref')
+  .argument('<ref>', 'Element ref, e.g. e6')
+  .argument('[url]', 'Restrict results to a page URL')
+  .action(async (ref, url, opts) => {
+    const parent = program.opts();
+    const config = resolveConfig({}, parent.config);
+    profileRef(ref, url, { url: url ?? opts.url ?? config.targetUrl, config });
+  });
+
+profileCmd
+  .command('pages')
+  .description('List pages in a site profile')
+  .argument('[url]', 'Origin URL (defaults to first profile)')
+  .action(async (url, opts) => {
+    const parent = program.opts();
+    const config = resolveConfig({}, parent.config);
+    profilePages({ url: url ?? opts.url ?? config.targetUrl, config });
+  });
+
+profileCmd
+  .command('ls')
+  .description('List all website profiles')
+  .action(async (opts) => {
+    const parent = program.opts();
+    const config = resolveConfig({}, parent.config);
+    profileList(config);
+  });
+
+profileCmd
+  .command('map')
+  .description('Build the overall site map JSON + per-route detail files for a site')
+  .argument('[url]', 'Origin URL (defaults to first profile)')
+  .action(async (url, opts) => {
+    const parent = program.opts();
+    const config = resolveConfig({}, parent.config);
+    profileMap({ url: url ?? opts.url ?? config.targetUrl, config });
+  });
+
+program
   .command('plan')
   .description('Generate test plan from snapshot via opencode')
   .option('--snapshot <file>', 'Specific snapshot file to analyze')
@@ -158,16 +248,18 @@ program
   .option('--extract', 'Extract test code directly from plan (skip opencode generation)')
   .option('--codegen', 'Launch interactive playwright codegen')
   .option('--headed', 'Show browser window')
+  .option('--profile <path>', 'Browser profile for auth state (auto-detects ./auth-profile)')
   .option('--reference <path>', 'User test procedures/screenshots directory or file')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({ headed: opts.headed }, parent.config);
+    const config = resolveConfig({ headed: opts.headed, storageState: opts.profile }, parent.config);
     await generateCommand({
       url: opts.url ?? config.targetUrl,
       plan: opts.plan,
       codegen: opts.codegen,
       extract: opts.extract,
       headed: opts.headed,
+      profile: opts.profile,
       reference: opts.reference,
       config,
     });
@@ -218,6 +310,7 @@ program
   .option('--max-iterations <N>', 'Maximum plan→generate→test→heal loops', parseInt)
   .option('--resume <runId>', 'Resume a previous interrupted autorun')
   .option('--profile <path>', 'Persistent browser profile for saved login state')
+  .option('--codegen [file]', 'Record a one-time codegen flow (element-ref annotated) before planning, or pass an existing codegen/exploration file (e.g. --codegen ./artifacts/tests/codegen-xxx.spec.ts) to use as reference material')
   .action(async (opts) => {
     const parent = program.opts();
     const config = resolveConfig({ headed: opts.headed, storageState: opts.profile }, parent.config);
@@ -234,6 +327,7 @@ program
       maxIterations: opts.maxIterations,
       resume: opts.resume,
       profile: opts.profile,
+      codegen: opts.codegen,
       config,
     });
   });

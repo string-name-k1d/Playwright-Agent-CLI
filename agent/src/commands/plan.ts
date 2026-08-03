@@ -1,6 +1,6 @@
 import chalk from 'chalk';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { join, basename } from 'node:path';
 import { opencodeRun, extractMarkdown } from '../lib/opencode.js';
 import { savePlan, ensureArtifactsDir, getLatestFile, isValidPlan, stripPreamble } from '../lib/artifacts.js';
 import { plannerPrompt } from '../lib/prompt-templates.js';
@@ -17,6 +17,8 @@ import {
 } from '../lib/explore-registry.js';
 import { getElementSummary } from '../lib/snapshot-parser.js';
 import { loadReferences, formatReferencesForPrompt, type TestReference } from '../lib/reference-loader.js';
+import { hostFromUrl, loadWebsiteProfileForHost, listWebsiteProfiles } from '../lib/website-profile.js';
+import { siteMapContextForPrompt } from '../lib/site-map.js';
 import { Config } from '../config.js';
 
 const MAX_EXPLORE_DEPTH = 3;
@@ -59,6 +61,7 @@ export interface PlanOptions {
   search?: string;
   explore?: boolean;
   reference?: string;
+  codegenFile?: string;
   config: Config;
 }
 
@@ -199,6 +202,31 @@ export async function planCommand(opts: PlanOptions): Promise<void> {
     requirements = readFileSync(opts.promptFile, 'utf-8');
   }
 
+  // ── Extra context: structured site map + codegen reference ─────
+  const extraContextParts: string[] = [];
+  const siteProfiles = listWebsiteProfiles(opts.config.outputDir);
+  if (siteProfiles.length > 0) {
+    let profile = siteProfiles[0];
+    if (opts.url) profile = loadWebsiteProfileForHost(hostFromUrl(opts.url), opts.config.outputDir) ?? profile;
+    const mapText = siteMapContextForPrompt(profile);
+    if (mapText) {
+      extraContextParts.push(`\nSTRUCTURED SITE MAP (from per-site profile):\n${mapText}`);
+    }
+  }
+  if (opts.codegenFile) {
+    const codegenPath = opts.codegenFile.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(opts.codegenFile)
+      ? opts.codegenFile
+      : join(process.cwd(), opts.codegenFile);
+    if (existsSync(codegenPath)) {
+      console.log(chalk.cyan(`Using existing codegen/exploration file as reference: ${codegenPath}`));
+      const content = readFileSync(codegenPath, 'utf-8');
+      extraContextParts.push(`\nRECORDED BROWSER SCRIPT (reference) — ${basename(codegenPath)}:\n${content}`);
+    } else {
+      console.log(chalk.yellow(`Codegen reference file not found: ${opts.codegenFile}`));
+    }
+  }
+  const extraContext = extraContextParts.join('\n\n');
+
   // ── Explore-plan mini-loop ─────────────────────────────────────
   const baseUrl = opts.url ?? opts.config.targetUrl;
   let plan = '';
@@ -209,7 +237,7 @@ export async function planCommand(opts: PlanOptions): Promise<void> {
       console.log(chalk.cyan(`\nExplore-plan iteration ${depth}/${MAX_EXPLORE_DEPTH}`));
     }
 
-    plan = await generatePlan(allSnapshots, requirements, referenceContent, opts);
+    plan = await generatePlan(allSnapshots, requirements, referenceContent, opts, extraContext);
 
     if (!plan || plan.length < 20) {
       console.error(chalk.red('Plan output too short or empty'));
@@ -274,7 +302,8 @@ async function generatePlan(
   allSnapshots: string[],
   requirements: string | undefined,
   referenceContent: string | undefined,
-  opts: PlanOptions
+  opts: PlanOptions,
+  extraContext?: string
 ): Promise<string> {
   // Build context: element summaries + full snapshots
   const contextParts: string[] = [];
@@ -291,6 +320,8 @@ async function generatePlan(
   if (allEntries.length > 1) {
     contextParts.push(`\nSITE STRUCTURE (${allEntries.length} pages explored):\n${buildRegistrySummary(opts.config.outputDir)}`);
   }
+
+  if (extraContext) contextParts.push(extraContext);
 
   const context = contextParts.join('\n\n');
   const prompt = plannerPrompt(allSnapshots[0], context, requirements, referenceContent);

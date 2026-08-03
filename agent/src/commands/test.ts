@@ -109,7 +109,7 @@ function copyScreenshots(testResultsDir: string, destDir: string): void {
 export const RUN_DIR = join(process.cwd(), 'run');
 const PLAYWRIGHT_CONFIG = join(process.cwd(), 'playwright.config.ts');
 
-function ensurePlaywrightConfig(targetUrl?: string, storageState?: string): void {
+export function ensurePlaywrightConfig(targetUrl?: string, storageState?: string): void {
   const useOptions: Record<string, unknown> = {
     actionTimeout: 10000,
     navigationTimeout: 30000,

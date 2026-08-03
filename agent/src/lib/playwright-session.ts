@@ -36,6 +36,25 @@ interface SerializedNode {
   valuemax?: number;
   valuetext?: string;
   children?: SerializedNode[];
+  selector?: string;
+  domId?: string;
+  required?: boolean;
+  min?: number;
+  max?: number;
+  placeholder?: string;
+}
+
+interface DomInfo {
+  tag: string;
+  id?: string;
+  dataTestId?: string;
+  ariaLabel?: string;
+  href?: string;
+  className?: string;
+  required?: boolean;
+  min?: number;
+  max?: number;
+  placeholder?: string;
 }
 
 export interface TrackedPage {
@@ -50,6 +69,8 @@ export class PlaywrightSession {
   private page: Page | null = null;
   private refCounter = 0;
   private _visitedPages: TrackedPage[] = [];
+  private _domCache = new Map<string, DomInfo[]>();
+  private _occCounters = new Map<string, number>();
 
   get visitedPages(): TrackedPage[] {
     return this._visitedPages;
@@ -232,6 +253,8 @@ export class PlaywrightSession {
     if (!root) return '';
 
     const serialized = this._cdpNodeToSerialized(root, nodeMap);
+    this._occCounters.clear();
+    await this._enrichTree(serialized);
     const lines = this._serializeNode(serialized, 0);
     return lines.join('\n');
   }
@@ -335,6 +358,72 @@ export class PlaywrightSession {
     return result;
   }
 
+  /**
+   * Enriches the serialized AX tree with best-effort DOM info (id,
+   * data-testid, href, required/min/max, placeholder) and a CSS selector so
+   * the site map can carry real selectors like `input#shipping-fullname`.
+   * Results are cached per (role, name) for the session lifetime; occurrence
+   * indexes map to getByRole(...).nth(k) order (both follow DOM order).
+   */
+  private async _enrichTree(node: SerializedNode): Promise<void> {
+    await this._enrichNode(node);
+    for (const child of node.children ?? []) {
+      await this._enrichTree(child);
+    }
+  }
+
+  private async _enrichNode(node: SerializedNode): Promise<void> {
+    if (!this.page || !node.role || !node.name) return;
+    const skip = new Set(['text', 'generic', 'RootWebArea', 'StaticText', 'InlineTextBox', 'none', 'paragraph']);
+    if (skip.has(node.role)) return;
+
+    const key = `${node.role}|${node.name}`;
+    const occ = this._occCounters.get(key) ?? 0;
+    this._occCounters.set(key, occ + 1);
+
+    let infos = this._domCache.get(key);
+    if (!infos || infos.length <= occ) {
+      infos = await this._domInfoFor(node.role, node.name);
+      this._domCache.set(key, infos);
+    }
+    const info = infos.length > 0 ? infos[Math.min(occ, infos.length - 1)] : undefined;
+    if (!info) return;
+
+    if (info.id) node.domId = info.id;
+    node.selector = composeSelector(info, node);
+    if (info.required) node.required = true;
+    if (info.min !== undefined) node.min = info.min;
+    if (info.max !== undefined) node.max = info.max;
+    if (info.placeholder) node.placeholder = info.placeholder;
+  }
+
+  private async _domInfoFor(role: string, name: string): Promise<DomInfo[]> {
+    try {
+      const locator = this.page!.getByRole(role as any, { name, exact: true });
+      const infos = await locator.evaluateAll<DomInfo[]>(els =>
+        (els as HTMLElement[]).map(el => {
+          const attrs: Record<string, string> = {};
+          for (const a of el.attributes) attrs[a.name] = a.value;
+          return {
+            tag: el.tagName.toLowerCase(),
+            id: el.id || undefined,
+            dataTestId: attrs['data-testid'],
+            ariaLabel: attrs['aria-label'],
+            href: (el as HTMLAnchorElement).getAttribute?.('href') || undefined,
+            className: typeof el.className === 'string' ? el.className : undefined,
+            required: el.hasAttribute('required') || attrs['aria-required'] === 'true',
+            min: attrs['min'] !== undefined ? Number(attrs['min']) : undefined,
+            max: attrs['max'] !== undefined ? Number(attrs['max']) : undefined,
+            placeholder: attrs['placeholder'],
+          };
+        })
+      );
+      return infos;
+    } catch {
+      return [];
+    }
+  }
+
   private _serializeNode(node: SerializedNode, depth: number): string[] {
     if (!node.role) {
       return [];
@@ -412,6 +501,30 @@ export class PlaywrightSession {
       lines.push(`${indent}  - /invalid: true`);
     }
 
+    if (node.domId) {
+      lines.push(`${indent}  - /domid: ${node.domId}`);
+    }
+
+    if (node.selector) {
+      lines.push(`${indent}  - /selector: ${node.selector}`);
+    }
+
+    if (node.required) {
+      lines.push(`${indent}  - /required: true`);
+    }
+
+    if (node.min !== undefined) {
+      lines.push(`${indent}  - /min: ${node.min}`);
+    }
+
+    if (node.max !== undefined) {
+      lines.push(`${indent}  - /max: ${node.max}`);
+    }
+
+    if (node.placeholder) {
+      lines.push(`${indent}  - /placeholder: "${node.placeholder}"`);
+    }
+
     if (node.children) {
       for (const child of node.children) {
         lines.push(...this._serializeNode(child, depth + 1));
@@ -453,4 +566,29 @@ export class PlaywrightSession {
     this.context = null;
     this.browser = null;
   }
+}
+
+/**
+ * Builds a best-effort CSS selector for an element: `#id` when a stable id
+ * exists, otherwise `data-testid`, then `tag[aria-label=...]`, then
+ * `tag[data-testid=...]`, then `tag:has-text("...")` as a last resort.
+ */
+function composeSelector(info: DomInfo, node: SerializedNode): string {
+  if (info.id) return `#${escapeCssIdentifier(info.id)}`;
+  if (info.dataTestId) return `${info.tag}[data-testid='${escapeCssAttribute(info.dataTestId)}']`;
+  const attrName = node.role === 'link' && info.href ? 'href' : info.ariaLabel ? 'aria-label' : '';
+  if (attrName) {
+    const value = attrName === 'href' ? (info.href ?? '') : (info.ariaLabel ?? '');
+    return `${info.tag}[${attrName}='${escapeCssAttribute(value)}']`;
+  }
+  if (node.name) return `${info.tag}:has-text("${node.name.replace(/"/g, '\\"')}")`;
+  return `${info.tag}`;
+}
+
+function escapeCssIdentifier(value: string): string {
+  return value.replace(/^(\d)/, '\\3$1 ').replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+}
+
+function escapeCssAttribute(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }

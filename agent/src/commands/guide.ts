@@ -6,6 +6,7 @@ import { PlaywrightSession } from '../lib/playwright-session.js';
 import { ensureArtifactsDir, saveSnapshot } from '../lib/artifacts.js';
 import { registerExploreEntry, type ExploreEntry } from '../lib/explore-registry.js';
 import { saveSiteProfile } from '../lib/site-profile.js';
+import { updateWebsiteProfile, loadWebsiteProfile, resolveElement } from '../lib/website-profile.js';
 import { parseSnapshotElements } from '../lib/snapshot-parser.js';
 import { Config, resolveProfile } from '../config.js';
 
@@ -24,6 +25,12 @@ interface SessionStep {
   title: string;
   timestamp: string;
   elementCount: number;
+}
+
+function updateProfile(entry: ExploreEntry, baseDir: string): void {
+  try {
+    updateWebsiteProfile(entry, baseDir);
+  } catch {}
 }
 
 function printCommands(): void {
@@ -198,6 +205,7 @@ export async function guideCommand(opts: GuideOptions): Promise<void> {
 
   const snapshotPath = await session.saveSnapshot(destDir);
   const initialEntry = registerExploreEntry(currentUrl, currentTitle, snapshotPath, snapshotPath.split(/[/\\]/).pop()!, opts.config.outputDir);
+  updateProfile(initialEntry, opts.config.outputDir);
 
   const steps: SessionStep[] = [{
     action: 'navigate',
@@ -243,9 +251,10 @@ export async function guideCommand(opts: GuideOptions): Promise<void> {
     try {
       const finalYaml = await session.getAccessibilitySnapshot();
       if (finalYaml) {
-        const finalPath = await session.saveSnapshot(destDir);
-        registerExploreEntry(currentUrl, currentTitle, finalPath, finalPath.split(/[/\\]/).pop()!, opts.config.outputDir);
-        currentYaml = finalYaml;
+      const finalPath = await session.saveSnapshot(destDir);
+      const finalEntry = registerExploreEntry(currentUrl, currentTitle, finalPath, finalPath.split(/[/\\]/).pop()!, opts.config.outputDir);
+      updateProfile(finalEntry, opts.config.outputDir);
+      currentYaml = finalYaml;
       }
     } catch (e: any) {
       console.log(chalk.yellow(`  Snapshot unavailable: ${e.message}`));
@@ -337,6 +346,7 @@ export async function guideCommand(opts: GuideOptions): Promise<void> {
 
           const newPath = await session.saveSnapshot(destDir);
           const entry = registerExploreEntry(currentUrl, currentTitle, newPath, newPath.split(/[/\\]/).pop()!, opts.config.outputDir);
+          updateProfile(entry, opts.config.outputDir);
 
           steps.push({
             action: 'navigate',
@@ -379,12 +389,21 @@ export async function guideCommand(opts: GuideOptions): Promise<void> {
               if (matches.length === 1) {
                 await session.clickElement(matches[0]);
               } else if (matches.length > 1) {
-                console.log(chalk.yellow(`  Multiple elements named "${target}":`));
-                for (const m of matches) {
-                  console.log(chalk.gray(`    [${m.ref}] ${m.role}: "${m.name}"`));
+                // Ambiguous in the fresh snapshot — try the website profile to disambiguate.
+                const profile = loadWebsiteProfile(currentUrl, opts.config.outputDir);
+                const profHits = profile ? resolveElement(profile, { name: target, url: currentUrl }) : [];
+                if (profHits.length === 1) {
+                  const m = profHits[0];
+                  console.log(chalk.gray(`  [profile] [${m.ref}] ${m.role} "${m.name}" — ${m.path}`));
+                  await session.clickElement({ ref: m.ref, role: m.role, name: m.name });
+                } else {
+                  console.log(chalk.yellow(`  Multiple elements named "${target}":`));
+                  for (const m of matches) {
+                    console.log(chalk.gray(`    [${m.ref}] ${m.role}: "${m.name}"`));
+                  }
+                  console.log(chalk.gray('  Use click with the [ref] tag instead.'));
+                  break;
                 }
-                console.log(chalk.gray('  Use click with the [ref] tag instead.'));
-                break;
               } else {
                 await session.click(`text="${target}"`);
               }
@@ -402,6 +421,7 @@ export async function guideCommand(opts: GuideOptions): Promise<void> {
 
           const newPath = await session.saveSnapshot(destDir);
           const entry = registerExploreEntry(currentUrl, currentTitle, newPath, newPath.split(/[/\\]/).pop()!, opts.config.outputDir);
+          updateProfile(entry, opts.config.outputDir);
 
           steps.push({
             action: 'click',
@@ -473,7 +493,8 @@ export async function guideCommand(opts: GuideOptions): Promise<void> {
           currentTitle = info.title || currentTitle;
 
           const newPath = await session.saveSnapshot(destDir);
-          registerExploreEntry(currentUrl, currentTitle, newPath, newPath.split(/[/\\]/).pop()!, opts.config.outputDir);
+          const snapEntry = registerExploreEntry(currentUrl, currentTitle, newPath, newPath.split(/[/\\]/).pop()!, opts.config.outputDir);
+          updateProfile(snapEntry, opts.config.outputDir);
 
           steps.push({
             action: 'snapshot',
@@ -565,7 +586,8 @@ export async function guideCommand(opts: GuideOptions): Promise<void> {
     const finalYaml = await session.getAccessibilitySnapshot();
     if (finalYaml) {
       const finalPath = await session.saveSnapshot(destDir);
-      registerExploreEntry(currentUrl, currentTitle, finalPath, finalPath.split(/[/\\]/).pop()!, opts.config.outputDir);
+      const finalEntry2 = registerExploreEntry(currentUrl, currentTitle, finalPath, finalPath.split(/[/\\]/).pop()!, opts.config.outputDir);
+      updateProfile(finalEntry2, opts.config.outputDir);
     }
   } catch {}
 

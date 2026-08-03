@@ -38,7 +38,7 @@ export async function checkCommand(opts: CheckOptions): Promise<void> {
     console.log(chalk.green(`  ✓ opencode found: ${oc.version}${modeLabel}`));
   } else {
     if (oc.mode === 'http') {
-      console.log(chalk.red('  ✗ opencode server unreachable — set OPENCODE_SERVER_URL or start `opencode serve` on host'));
+      console.log(chalk.red('  ✗ opencode server unreachable — leave OPENCODE_SERVER_URL empty to use the local CLI mode (opencode serve is currently broken: "Unexpected error / ServeError")'));
     } else {
       console.log(chalk.red('  ✗ opencode not found — install with: npm install -g opencode-ai'));
     }

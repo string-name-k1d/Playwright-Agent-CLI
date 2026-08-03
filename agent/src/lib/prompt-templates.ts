@@ -169,7 +169,7 @@ export function generatorPrompt(
 You are a Playwright test generator. Given a test plan, generate a complete Playwright test file in TypeScript.
 
 CRITICAL LOCATOR RULES (avoid common failures):
-- NEVER use [ref=...] or [aria-ref=...] attributes — these are from accessibility snapshots, not real DOM attributes. Use getByRole(), getByText(), getByTestId(), or CSS selectors instead.
+- NEVER use [ref=...] or [aria-ref=...] attributes — these are from accessibility snapshots, not real DOM attributes. Use getByRole(), getByText(), getByTestId(), or CSS selectors instead. (When codegen-recorded scripts are included as references, their [eN] annotations are informational comments only — resolve each to the matching getByRole()/getByText() locator, and when a ref list shows multiple matches for a repeating element, disambiguate with .nth().)
 - NEVER use .locator('..') to find parent elements — it is fragile and often matches too many elements. Instead, use getByRole() or getByText() with filters.
 - When a locator might match multiple elements, ALWAYS narrow it:
   - Use { exact: true } for getByRole/getByText name matching

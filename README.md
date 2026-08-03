@@ -14,6 +14,7 @@ A TypeScript CLI tool implementing an explore > plan > test > report workflow fo
   - [plan](#plan)
   - [generate](#generate)
   - [test](#test)
+  - [ui](#ui)
   - [report](#report)
   - [skill](#skill)
   - [autorun](#autorun)
@@ -23,8 +24,12 @@ A TypeScript CLI tool implementing an explore > plan > test > report workflow fo
 - [Screenshots](#screenshots)
 - [Natural Language Prompts](#natural-language-prompts)
 - [Explore Registry](#explore-registry)
+- [Website Profiles](#website-profiles)
+- [Site Map](#site-map)
 - [Site Profile](#site-profile)
 - [User References](#user-references)
+- [Locator Rules](#locator-rules)
+- [Accessibility Tree Limitations (CDP)](#accessibility-tree-limitations-cdp)
 - [Architecture](#architecture)
 - [File Structure](#file-structure)
 - [Configuration](#configuration)
@@ -35,7 +40,7 @@ A TypeScript CLI tool implementing an explore > plan > test > report workflow fo
 
 ## Overview
 
-`pw-cli-agent` orchestrates end-to-end test generation and execution. It uses `playwright-cli` for token-efficient browser control and `opencode` for AI-powered test planning, code generation, and self-healing.
+`pw-cli-agent` orchestrates end-to-end test generation and execution. It drives Chromium via Playwright's in-process Node.js API (accessibility snapshots serialized with `[eN]` element refs) and uses `opencode` for AI-powered test planning, code generation, and self-healing. Every explore also feeds a **structured per-site profile** (hierarchical element trees with CSS selectors + DOM state) and an **overall site map** (`site-map.json` + per-route detail files) that can be queried without re-exploring.
 
 ```
 Manual:  explore → plan → generate → test → report
@@ -148,7 +153,7 @@ STORAGE_STATE=./auth-profile
 
 ### `explore`
 
-Open a browser, navigate to a URL, capture a snapshot and optional screenshot. Each explore result is registered in the **explore registry** — a searchable index of all snapshots with element metadata (links, headings, buttons, inputs). After each run, a **site profile** is automatically regenerated.
+Open a browser, navigate to a URL, capture a snapshot and optional screenshot. Each explore result is registered in the **explore registry** — a searchable index of all snapshots with element metadata (links, headings, buttons, inputs). After each run, the **site profile**, the **per-site website profile** (`website-profiles/<host>.json`), and the **site map** (`<host>-site-map.json` + route detail files) are automatically regenerated.
 
 ```bash
 pw-cli-agent explore --url https://example.com
@@ -340,9 +345,25 @@ pw-cli-agent generate --codegen --url https://example.com
 **Options:**
 - `--plan <file>` — plan file to generate tests from
 - `--extract` — extract code blocks directly (skip opencode generation)
-- `--codegen` — launch interactive `playwright codegen`
+- `--codegen` — launch interactive `playwright codegen` (always headed; codegen does not accept `--headed`)
 - `--url <url>` — target URL (for opencode context)
-- `--headed` — show browser window (codegen mode)
+- `--profile <path>` — browser profile for auth state (auto-detects `./auth-profile`); codegen loads it via `--load-storage`
+- `--reference <path>` — user test procedures/screenshots directory or file
+
+**Codegen mode:**
+- Opens the Playwright Inspector on the container's Xvfb display. View and drive it from your host browser via noVNC at `http://localhost:6080/vnc.html` (native VNC client: `localhost:5900`).
+- Auth state is loaded automatically when a profile exists (`./auth-profile` or `--profile <path>`), so protected pages work immediately.
+- On session close the script is saved to `./artifacts/tests/codegen-<timestamp>.spec.ts` and a saved/not-saved confirmation is printed.
+
+**Element refs (`[eN]`) for repeating elements:** Every saved codegen script is post-processed against the latest explore snapshot (`./artifacts/explore/`). Each `getByRole()`/`getByText()`/`getByLabel()` locator is annotated with the matching accessibility-snapshot ref as a trailing comment, so repeating elements are unambiguous:
+
+- unique match → `await page.getByRole('button', { name: 'Add Text Area Block' }).click(); // [e4]`
+- repeating element picked with `.first()`/`.nth(k)` → resolved to that specific ref (e.g. `.nth(1)` → `// [e6]`)
+- repeating element without an index → `// [e2, e3] (2 matches - use .nth())`
+
+Annotations are comments only, so the file stays valid TypeScript and fully runnable.
+
+**Codegen scripts feed the AI generator:** Any `codegen-*.spec.ts` files under `./artifacts/tests/` are automatically inlined as reference material whenever tests are generated via opencode (`generate --plan`, and autorun's generation steps). The generator treats the recorded actions as the authoritative source for locators and interaction order, and uses the `[eN]` annotations to disambiguate repeating elements — the refs are informational only and are translated into `getByRole()`/`getByText()` locators (never emitted as DOM selectors).
 
 Tests saved to `./artifacts/tests/`.
 
@@ -372,6 +393,27 @@ pw-cli-agent test --execute ./tests/test.spec.ts --profile ./my-session
 **Dependency-ordered parallel execution:** When multiple test files are run together, the runner reads the dependency labels from the plan (`depends: TC-N` / `depends: <test-name>`). Test files are then executed in dependency-ordered **waves**: files with no dependencies run first (in parallel), and each subsequent wave starts only after the tests it depends on have finished. Files within the same wave still run in parallel. Autorun enables this automatically for multi-file runs.
 
 Test results saved to `./artifacts/results/run-<timestamp>/`.
+
+### `ui`
+
+Run the interactive Playwright UI test runner against the container display. Launches headed Chromium on the Xvfb display and serves the Playwright UI panel, so you can watch and debug tests in a browser.
+
+```bash
+# Open the UI panel (defaults to generated tests in ./artifacts/tests)
+pw-cli-agent ui
+
+# Open a specific test file/directory
+pw-cli-agent ui --execute ./artifacts/tests/test-0.spec.ts
+```
+
+**Options:**
+- `--execute <file>` — specific test file/directory to open (default: generated tests)
+- `--url <url>` — target URL (falls back to `TARGET_URL`)
+- `--profile <path>` — browser profile for auth state (auto-detects `./auth-profile`)
+- `--ui-host <host>` — host to serve the UI panel on (default: `0.0.0.0`)
+- `--ui-port <port>` — port to serve the UI panel on (default: `8123`; `0` = any free port)
+
+Access the panel from your host browser at `http://localhost:8123`; the headed browser is viewable via noVNC at `http://localhost:6080/vnc.html`.
 
 ### `report`
 
@@ -413,19 +455,23 @@ pw-cli-agent autorun --url https://example.com --prompt "Test the login flow"
 # Limit iterations
 pw-cli-agent autorun --url https://example.com --max-iterations 5
 
+# Record a one-time codegen flow before planning (element-ref annotated, feeds the AI generator)
+pw-cli-agent autorun --url https://example.com --codegen
+
 # Resume an interrupted run
 pw-cli-agent autorun --resume abc1234
 ```
 
 **Pipeline loop:**
 1. **Explore** — capture accessibility snapshot (once)
-2. **Plan** — generate test plan from snapshot via opencode
-3. **Generate** — extract test code blocks from plan
-4. **Test** — execute tests via Playwright (dependent tests run after their dependencies)
-5. **Heal** — re-explore failures, generate a corrected healing plan (passing tests preserved)
-6. **Generate** — the healing plan feeds directly back into test generation (no fresh re-plan, so previously-passing tests are not regenerated and stay green)
+2. **Codegen** *(optional, with `--codegen`)* — record a one-time flow in the browser (viewable via noVNC `http://localhost:6080/vnc.html`); the script is saved to `./artifacts/tests/`, annotated with `[eN]` element refs, and auto-inlined as reference material whenever tests are generated
+3. **Plan** — generate test plan from snapshot via opencode
+4. **Generate** — extract test code blocks from plan (falls back to opencode generation, which includes any codegen scripts as reference)
+5. **Test** — execute tests via Playwright (dependent tests run after their dependencies)
+6. **Heal** — re-explore failures, generate a corrected healing plan (passing tests preserved)
+7. **Generate** — the healing plan feeds directly back into test generation (no fresh re-plan, so previously-passing tests are not regenerated and stay green)
 
-The loop repeats steps 3–6 until all tests pass or max iterations reached.
+The loop repeats steps 4–7 until all tests pass or max iterations reached.
 
 **Options:**
 - `--url <url>` — target URL (falls back to `TARGET_URL`)
@@ -435,6 +481,7 @@ The loop repeats steps 3–6 until all tests pass or max iterations reached.
 - `--max-iterations <N>` — maximum loop iterations (default: retries + 1)
 - `--resume <runId>` — resume a previous interrupted run
 - `--profile <path>` — browser profile for auth state (auto-detects `./auth-profile`)
+- `--codegen` — record a one-time codegen flow before planning
 
 State saved to `./artifacts/results/autorun-<runId>/state.json`.
 
@@ -494,13 +541,15 @@ Session initializes from `.env` (`TARGET_URL`, `OPENCODE_MODEL`). Use `↑`/`↓
 |---------|-------------|-------------|
 | `check` | Verify environment and connectivity | `--url`, `--screenshot`, `--profile` |
 | `login` | Log in via Drush ULI, save browser profile | `--url`, `--user`, `--uli`, `--drush-cmd`, `--profile` |
-| `explore` | Open browser, navigate, capture snapshot (registers in explore registry) | `--url`, `--depth`, `--screenshot`, `--headed`, `--guide`, `--repl`, `--profile` |
+| `explore` | Open browser, navigate, capture snapshot (registers in explore registry + per-site profile) | `--url`, `--depth`, `--screenshot`, `--headed`, `--guide`, `--repl`, `--profile` |
+| `profile` | Inspect per-site profiles: element trees, registry queries, refs, pages, site map | `tree <url>`, `query <q> [url]`, `ref <eN> [url]`, `pages [url]`, `ls`, `map [url]` |
 | `plan` | Generate test plan from snapshot via opencode (queries/explores registry) | `--url`, `--snapshot`, `--prompt`, `--prompt-file`, `--model`, `--search`, `--explore`, `--reference` |
-| `generate` | Generate test files from plans | `--plan`, `--extract`, `--codegen`, `--url`, `--headed`, `--reference` |
+| `generate` | Generate test files from plans (extract / opencode / interactive codegen with `[eN]` ref annotation) | `--plan`, `--extract`, `--codegen`, `--url`, `--profile`, `--reference` |
 | `test` | Execute Playwright test files | `--execute`, `--headed`, `--retries`, `--workers`, `--profile` |
+| `ui` | Run the interactive Playwright UI test runner (headed, panel served on `8123`) | `--execute`, `--url`, `--profile`, `--ui-host`, `--ui-port` |
 | `report` | Aggregate artifacts into summary report | `--format`, `--output` |
 | `skill` | Generate opencode skill files | `--output-dir`, `--agents` |
-| `autorun` | Loop: explore → plan → generate → test → heal → generate (dependency-ordered parallel tests) | `--url`, `--headed`, `--prompt`, `--max-iterations`, `--resume`, `--profile` |
+| `autorun` | Loop: explore → [codegen] → plan → generate → test → heal → generate (dependency-ordered parallel tests) | `--url`, `--headed`, `--prompt`, `--max-iterations`, `--resume`, `--profile`, `--codegen` |
 | `heal` | Re-explore failures (element-not-found aware), generate corrected plan (preserves passing tests) | `--url`, `--model`, `--headed`, `--profile` |
 | `repl` | Start interactive REPL session | — |
 
@@ -569,6 +618,76 @@ artifacts/explore-registry.json
 └── summary: "Links:\n  [e5] \"Login\" → /login\n  ..."
 ```
 
+## Website Profiles
+
+Beyond the flat registry, every `explore` / `guide` snapshot also updates a **structured per-site profile** at `artifacts/website-profiles/<host>.json` (one file per origin, e.g. `mtpc_test.json`). It stores:
+
+| Field | Content |
+|-------|---------|
+| `pages` | Per-page record: URL, title, last visited, outbound links (related pages), and the full hierarchical element tree |
+| `registry` | Flat element index across all pages (ref, role, name, page URL, hierarchy path, locator) |
+| `refIndex` | Quick lookup of which pages each `[eN]` ref appears on |
+
+Each element carries its hierarchy path (e.g. `main > form > searchbox`), a Playwright locator, a best-effort CSS `selector` (e.g. `input#edit-title-0-value`), and DOM state (`required`, `min`/`max`, `placeholder`) when present, so lookups can be answered without re-parsing snapshots.
+
+### Profile commands
+
+```bash
+pw-cli-agent profile ls                                  # list all site profiles
+pw-cli-agent profile tree <url>                          # hierarchical element tree for a page
+pw-cli-agent profile tree <url> --include-text           # include text nodes in the tree
+pw-cli-agent profile query "Add Standard Page"           # registry search (name/role/ref/text)
+pw-cli-agent profile query "Page Title" <url>            # restrict search to one page
+pw-cli-agent profile ref e42                             # show pages + paths where ref e42 appears
+pw-cli-agent profile ref e162 <url>                      # narrow a ref to one page
+pw-cli-agent profile pages <url>                         # list pages in a site profile
+pw-cli-agent profile map <url>                           # build the site map (JSON + route details)
+```
+
+`[eN]` refs are per-snapshot, so `profile ref` reports every page the ref appears on; pass a URL to disambiguate. The `guide` REPL uses the profile to disambiguate `click` targets when the live snapshot has multiple matches.
+
+## Site Map
+
+Every `explore` / `guide` snapshot also regenerates an **overall site map** for the site at `artifacts/website-profiles/<host>-site-map.json`, alongside **per-route detail files** under `artifacts/website-profiles/<host>-routes/<path>.json` (flat element lists with selector + state).
+
+The site map uses a stable, machine-readable schema:
+
+```json
+{
+  "site": "mtpc_test",
+  "map_version": 1,
+  "routes": [
+    {
+      "path": "/node/add/custom_page",
+      "title": "Create Standard Page",
+      "elements": [
+        {
+          "id": "e198",
+          "role": "textbox",
+          "label": "Page Title",
+          "children": [],
+          "selector": "input#edit-title-0-value",
+          "state": { "value": "", "min": "", "max": "", "enabled": true, "required": true }
+        }
+      ]
+    }
+  ]
+}
+```
+
+`elements` preserves the snapshot hierarchy (non-semantic `generic`/`text` wrappers are flattened away), so landmarks nest their interactive children the same way the page does. Regenerate it at any time from the existing profile with `pw-cli-agent profile map <url>`.
+
+### Querying the site map
+
+`scripts/query-site-map.mjs` is a targeted query script for the map:
+
+```bash
+node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test-site-map.json "Page Title"
+node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test-site-map.json textbox --json   # machine-readable
+node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test-site-map.json --list            # list routes
+node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test-site-map.json --route /node/add/custom_page
+```
+
 ## Site Profile
 
 A living document at `artifacts/site-profile.md` that accumulates knowledge about the website across all explore runs. Regenerated after each `explore` command and after guided sessions.
@@ -584,6 +703,7 @@ The profile contains:
 | **Interactive Elements** | Buttons and actions found across the site |
 | **Content Headings** | All headings discovered across pages (site map) |
 | **Page Details** | Per-page breakdown with headings and metadata |
+| **Website Profiles** | Links to per-site structured profiles (site map, route details) with command examples |
 
 The profile is useful for:
 - Understanding site structure before planning tests
@@ -677,7 +797,7 @@ Starting with Playwright v1.61.0, `page.accessibility.snapshot()` returns `undef
 | **CKEditor / WYSIWYG iframes** | Rich text editors render inside `<iframe>` elements. `getFullAXTree` does not cross iframe boundaries, so the editor toolbar and editable area appear as an opaque `application` role with generic text. | The text area block's body content and toolbar buttons are not accessible as structured elements. Clicking "Bold" or "Italic" in the CKEditor toolbar requires DOM-based fallback locators. |
 | **Collapsed/conditional fields** | Fields hidden by JS (e.g. animation sub-options shown only after checking "Animation") do not appear in the CDP tree. | The planner cannot see hidden fields — test generation for conditional form sections is unreliable without prior interaction (clicking the toggles). |
 | **Nested paragraphs (Drupal)** | Sections and blocks are rendered as `<table>` rows with concatenated cell text. The tree shows a single `cell` node containing all labels concatenated (e.g. `"1-COLUMN SECTION Collapse Toggle Actions Section Name …"`) instead of structured child elements. | The planner must infer the structure from the concatenated text rather than from role/name pairs. |
-| **Dropbutton widget expansion** | Drupal's dropbutton secondary actions (e.g. "Add Text Area Block") are hidden until the toggle is clicked. They are not present in the CDP tree on initial page load. | Interactive pages with dropdowns require pre-expansion before snapshotting to capture all available options. |
+| **Dropbutton widget expansion** | Drupal's dropbutton secondary actions (e.g. "Add Text Area Block") are hidden until the toggle is clicked. They are not present in the CDP tree on initial page load. | On `/node/add/*` pages the explore flow auto-expands the paragraph dropbuttons (clicks "Add N-Column Section" first), so secondary actions are captured in the snapshot. Other dropdowns still require manual expansion. |
 | **Non-stable nodeId values** | CDP nodeIds are large non-sequential integers (501 digit gaps) that change between page loads. They are internal DOM pointers, not stable identifiers. | Element refs (`[ref=N]`) cannot be persisted across sessions. Playwright `getByRole()` locators are the only portable cross-session identifiers. |
 | **Concatenated label text** | Adjacent `StaticText` nodes (e.g. label + description) are sometimes merged into one or split inconsistently across parent/child. | Element summaries may show truncated or duplicated text for form descriptions. |
 
@@ -688,7 +808,7 @@ Starting with Playwright v1.61.0, `page.accessibility.snapshot()` returns `undef
 | CKEditor content capture | Before snapshotting, use `page.evaluate()` to read the CKEditor instance content via `CKEDITOR.instances[instanceName].getData()` or the native `innerHTML` of the editor's editable iframe body. |
 | Hidden / lazy fields | Include pre-interaction steps in the test plan: "click the Animation checkbox first, then snapshot" or use `locator.click({ force: true })` on hidden fields. |
 | Nested paragraph structure | Parse the concatenated cell text and split on known label keywords ("Section Name:", "Full Width:", etc.). Use `page.getByLabel()` as a fallback for fields within paragraphs. |
-| Dropbutton / secondary actions | Before snapshotting, programmatically expand all dropbuttons: `page.locator('.dropbutton-toggle button').click()`. The tool does not auto-expand them. |
+| Dropbutton / secondary actions | The explore flow auto-expands paragraph dropbuttons on `/node/add/*` pages (clicks "Add N-Column Section") before snapshotting, so "Add Text Area Block" etc. appear. For other dropdowns, expand manually: `page.locator('.dropbutton-toggle button').click()`. |
 | Non-stable nodeIds | Always use `getByRole()` locators with the accessible name for cross-session portability. The `[ref=N]` notation is valid only within a single session/snapshot. |
 | Missing text content | For static text inside `cell` or `StaticText` nodes that appear truncated, use `page.locator('selector').textContent()` as a fallback. |
 
@@ -701,8 +821,9 @@ pw-cli-agent
 │   ├── login    — Playwright API: launchPersistentContext → ULI → storageState JSON
 │   ├── explore  — PlaywrightSession: navigate, accessibility snapshot → registry + site profile
 │   ├── guide    — PlaywrightSession: interactive codegen (default) or REPL session
+│   ├── profile  — per-site element trees, registry queries, refs, pages, site map
 │   ├── plan     — generate test plan from snapshots (queries registry, can trigger explore)
-│   ├── generate — create .spec.ts files from plans (extract / opencode)
+│   ├── generate — create .spec.ts files from plans (extract / opencode / codegen with [eN] refs)
 │   ├── test     — execute playwright tests (loads storageState JSON for auth)
 │   ├── report   — aggregate results into markdown/HTML
 │   ├── skill    — generate opencode SKILL.md files
@@ -714,6 +835,7 @@ pw-cli-agent
 │       ├── goto, click, fill, screenshot, accessibility snapshot
 │       ├── page.pause() for Playwright Inspector (codegen mode)
 │       ├── YAML accessibility serialization with [ref=eN] format
+│       ├── DOM enrichment (best-effort CSS selectors, required/min/max/placeholder state)
 │       └── navigation tracking (visitedPages)
 ├── OpenCode Integration (child_process.spawn)
 │   └── opencodeRun(prompt, opts) — runs `opencode run --format json`
@@ -721,6 +843,10 @@ pw-cli-agent
 │   └── explore-registry.json — searchable index of snapshots with element metadata
 ├── Snapshot Parser
 │   └── parseSnapshotElements(yaml) — extract refs, roles, names, links, headings, buttons
+├── Website Profiles
+│   ├── lib/element-tree.ts — snapshot YAML → hierarchical element tree + TreeRecords (selectors, state)
+│   ├── lib/website-profile.ts — per-origin <host>.json (pages, registry, refIndex)
+│   └── lib/site-map.ts — overall site map + per-route detail JSON (selector/state schema)
 ├── Artifact Manager
 │   └── ./artifacts/{explore,plans,tests,reports,results}/
 └── Config
@@ -740,14 +866,16 @@ agent/
     ├── commands/
     │   ├── check.ts                  # Environment verification
     │   ├── login.ts                  # Playwright API: ULI auth + storageState JSON export
-    │   ├── explore.ts                # Browser exploration via playwright-cli + snapshots + registry
+    │   ├── explore.ts                # Browser exploration via in-process PlaywrightSession + snapshots + registry
     │   ├── guide.ts                  # Interactive guided browsing session (headed, records observations)
+    │   ├── profile.ts                # Per-site profiles: element trees, registry queries, refs, site map
     │   ├── plan.ts                   # Test plan generation (registry query, multi-page explore)
-    │   ├── generate.ts               # Test file creation (extract / opencode / codegen)
+    │   ├── generate.ts               # Test file creation (extract / opencode / codegen + ref annotation)
     │   ├── test.ts                   # Test execution + self-heal retries (loads storageState)
+    │   ├── ui.ts                     # Interactive Playwright UI test runner (headed, panel server)
     │   ├── report.ts                 # Result aggregation
     │   ├── skill.ts                  # OpenCode skill file generation
-    │   ├── autorun.ts                # Loop: explore → plan → generate → test → heal
+    │   ├── autorun.ts                # Loop: explore → [codegen] → plan → generate → test → heal
     │   ├── heal.ts                   # Element-not-found detection + re-explore + corrected plan
     │   └── repl.ts                   # Interactive REPL session
     └── lib/
@@ -755,7 +883,12 @@ agent/
         ├── opencode.ts               # OpenCode subprocess wrapper
         ├── artifacts.ts              # Artifact directory management + code extraction
         ├── snapshot-parser.ts        # YAML snapshot → structured elements (refs, roles, links)
+        ├── codegen-annotator.ts      # Post-processes codegen scripts with [eN] snapshot refs
+        ├── reference-loader.ts       # Loads user test procedures/screenshots into AI prompts
         ├── explore-registry.ts       # Searchable index of explore snapshots + metadata
+        ├── element-tree.ts           # Snapshot YAML → hierarchical element tree + TreeRecords
+        ├── website-profile.ts        # Per-site profile JSON (pages, registry, refIndex)
+        ├── site-map.ts               # Overall site map + per-route detail files
         ├── site-profile.ts           # Living site profile (accumulated knowledge from all explores)
         └── prompt-templates.ts       # Reusable prompt templates for opencode
 ```
@@ -783,7 +916,7 @@ Priority: CLI flags > env vars > config file > defaults.
 |----------|-------------|
 | `TARGET_URL` | Default target URL |
 | `OPENCODE_MODEL` | Default opencode model |
-| `OPENCODE_SERVER_URL` | Connect to a host-running `opencode serve` instead of local CLI |
+| `OPENCODE_SERVER_URL` | Remote opencode server endpoint (leave empty for local CLI mode; remote server mode is currently broken in opencode 1.18.x) |
 | `PW_CLI_HEADED` | Run browsers headed by default |
 | `PW_CLI_OUTPUT_DIR` | Custom artifacts directory |
 | `STORAGE_STATE` | Default browser profile path for saved login state |
@@ -794,26 +927,20 @@ The tool runs inside a container with `playwright-cli`, `opencode`, and all brow
 
 ### OpenCode Connection
 
-**Mode 1: Remote server (recommended for Docker)**
+**Mode 1: Local CLI inside the container (default, recommended)**
 
-```bash
-# On host — start opencode server
-opencode serve --port 4096
+Leave `OPENCODE_SERVER_URL` empty. The container runs the `opencode` CLI directly (`opencode run --format json`), and API keys are provided by mounting the host's opencode config into the container (see `docker-compose.yml`). Verify the connection with `pw-cli-agent check`.
 
-# In .env
-OPENCODE_SERVER_URL=http://host.docker.internal:4096
-OPENCODE_MODEL=anthropic/claude-sonnet-4-6
-```
+**Mode 2: Remote server (currently broken — do not use)**
 
-**Mode 2: Local CLI inside container**
-
-If `OPENCODE_SERVER_URL` is not set, the container runs `opencode` CLI directly. Requires API keys inside the container.
+`opencode serve --port 4096` starts a headless server, but opencode 1.18.11 crashes immediately with `Error: Unexpected error` / `ServeError` on startup, so this mode is not usable. On Windows the `opencode` command may also resolve to the OpenCode **desktop app** (`OpenCode.exe`), which is not a CLI and ignores `serve` arguments. If a working server becomes available, set `OPENCODE_SERVER_URL=http://host.docker.internal:4096`.
 
 ### Usage
 
 The container exposes these ports:
 - `6080` — noVNC web client (`http://localhost:6080/vnc.html`)
 - `5900` — VNC (native VNC client)
+- `8123` — Playwright UI panel (`ui` command; configurable via `--ui-port`)
 
 ```bash
 docker-compose build
@@ -846,9 +973,12 @@ External tools (installed in container):
 - `opencode` — AI agent backend
 
 Internal modules:
-- `playwright-session.ts` — in-process Playwright wrapper (goto, click, fill, screenshot, accessibility YAML)
+- `playwright-session.ts` — in-process Playwright wrapper (goto, click, fill, screenshot, accessibility YAML, DOM enrichment)
 - `snapshot-parser.ts` — parses Playwright YAML snapshots into structured element data (refs, roles, links, headings, buttons)
 - `explore-registry.ts` — searchable index of explore snapshots with element metadata
+- `element-tree.ts` — hierarchical element tree from snapshot YAML (paths, CSS selectors, DOM state)
+- `website-profile.ts` — per-origin structured profile (pages, registry, ref index)
+- `site-map.ts` — overall site map + per-route detail JSON (shared schema)
 - `site-profile.ts` — living site profile regenerated from the explore registry after each run
 
 ## References

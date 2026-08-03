@@ -4,6 +4,7 @@ import { PlaywrightSession } from '../lib/playwright-session.js';
 import { ensureArtifactsDir } from '../lib/artifacts.js';
 import { registerExploreEntry, type ExploreEntry } from '../lib/explore-registry.js';
 import { saveSiteProfile } from '../lib/site-profile.js';
+import { updateWebsiteProfile, profileFileFor } from '../lib/website-profile.js';
 import { Config, resolveProfile } from '../config.js';
 
 export interface ExploreOptions {
@@ -57,6 +58,11 @@ export async function exploreCommand(opts: ExploreOptions): Promise<ExploreResul
     opts.config.outputDir
   );
   console.log(chalk.gray(`  Elements: ${entry.elementCount}, Links: ${entry.linkCount}`));
+
+  // Update the per-site structured profile (element trees + registry)
+  const siteProfile = updateWebsiteProfile(entry, opts.config.outputDir);
+  const siteProfilePath = profileFileFor(siteProfile.baseUrl || entry.url, opts.config.outputDir);
+  console.log(chalk.gray(`  Website profile: ${siteProfilePath}`));
 
   if (opts.screenshot) {
     const imgFilename = `explore-${Date.now()}.png`;
