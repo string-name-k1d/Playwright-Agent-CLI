@@ -13,6 +13,8 @@ import {
   getSnapshotElements,
   getUnvisitedLinks,
   buildRegistrySummary,
+  findExploreElements,
+  formatExploreElement,
   type ExploreEntry,
 } from '../lib/explore-registry.js';
 import { getElementSummary } from '../lib/snapshot-parser.js';
@@ -80,6 +82,13 @@ export async function planCommand(opts: PlanOptions): Promise<void> {
         console.log(chalk.gray(`    Title: ${e.title}`));
         console.log(chalk.gray(`    Elements: ${e.elementCount}, Links: ${e.linkCount}`));
         console.log(chalk.gray(`    Headings: ${e.headingCount.slice(0, 5).join(', ')}`));
+        const matches = findExploreElements(e, opts.search, opts.config.outputDir).slice(0, 8);
+        if (matches.length > 0) {
+          console.log(chalk.gray(`    Matches (${matches.length}):`));
+          for (const m of matches) {
+            console.log(chalk.gray(`      ${formatExploreElement(m)}`));
+          }
+        }
         console.log('');
       }
     }

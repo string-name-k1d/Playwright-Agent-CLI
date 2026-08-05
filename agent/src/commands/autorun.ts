@@ -11,6 +11,7 @@ import { healCommand } from './heal.js';
 import { ensureArtifactsDir, getLatestFile, wrapInTest, parsePlanTestCases, computeDependencyLevels, extractCodeBlocks } from '../lib/artifacts.js';
 import { hostFromUrl, profileFileFor } from '../lib/website-profile.js';
 import { siteMapFileFor, loadSiteMap } from '../lib/site-map.js';
+import { refreshWebsiteProfile } from '../lib/profile-refresh.js';
 import { Config, resolveProfile } from '../config.js';
 
 const execFileAsync = promisify(execFile);
@@ -419,7 +420,18 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
         saveState(state);
 
         if (state.allPassed) {
-          console.log(chalk.green.bold('\n✓ All tests passed — stopping loop\n'));
+          console.log(chalk.green.bold('\n✓ All tests passed — refreshing website profile\n'));
+          try {
+            const refresh = await refreshWebsiteProfile({
+              url: state.url,
+              headed: state.headed,
+              profile,
+              config,
+            });
+            substep(`Profile refresh: ${refresh.added} new page(s) added (${refresh.total} total)`);
+          } catch (err: any) {
+            console.log(chalk.yellow(`  Profile refresh failed: ${err.message}`));
+          }
           break;
         }
       }

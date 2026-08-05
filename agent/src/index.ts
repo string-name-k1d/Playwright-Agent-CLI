@@ -13,6 +13,7 @@ import { autorunCommand } from './commands/autorun.js';
 import { healCommand } from './commands/heal.js';
 import { loginCommand } from './commands/login.js';
 import { uiCommand } from './commands/ui.js';
+import { cleanCommand } from './commands/clean.js';
 import { profileTree, profileQuery, profileRef, profilePages, profileList, profileMap } from './commands/profile.js';
 
 const program = new Command();
@@ -348,6 +349,26 @@ program
       headed: opts.headed,
       profile: opts.profile,
       config,
+    });
+  });
+
+program
+  .command('clean')
+  .description('Clean up scratch files and prune old run artifacts')
+  .option('--dry-run', 'Preview what would be removed without deleting anything')
+  .option('--autorun', 'Prune old autorun-* result dirs, keeping the newest')
+  .option('--runs', 'Prune old run-* result dirs, keeping the newest')
+  .option('--keep-autorun <N>', 'Autorun dirs to keep when pruning (default: 3)', parseInt)
+  .option('--keep-runs <N>', 'Run dirs to keep when pruning (default: 5)', parseInt)
+  .option('--all', 'Wipe the entire artifacts/ directory and recreate the standard subdirs')
+  .action(async (opts) => {
+    await cleanCommand({
+      dryRun: opts.dryRun,
+      autorun: opts.autorun,
+      runs: opts.runs,
+      all: opts.all,
+      keepAutorun: opts.keepAutorun,
+      keepRuns: opts.keepRuns,
     });
   });
 

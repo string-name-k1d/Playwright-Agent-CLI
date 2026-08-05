@@ -115,7 +115,8 @@ export class PlaywrightSession {
     }
 
     this._setupListeners();
-    await this.page.goto(url, { waitUntil: 'networkidle' });
+    await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await this.page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
     await this.page.waitForTimeout(1000);
   }
 
@@ -153,7 +154,8 @@ export class PlaywrightSession {
 
   async goto(url: string): Promise<void> {
     if (!this.page) throw new Error('Session not started. Call launch() first.');
-    await this.page.goto(url, { waitUntil: 'networkidle' });
+    await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await this.page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
     await this.page.waitForTimeout(500);
   }
 
@@ -550,6 +552,16 @@ export class PlaywrightSession {
     let title = '';
     try { title = await this.page.title(); } catch {}
     return { url, title };
+  }
+
+  async waitForTimeout(ms: number): Promise<void> {
+    if (!this.page) throw new Error('Session not started.');
+    await this.page.waitForTimeout(ms);
+  }
+
+  async evaluate<R>(fn: () => R): Promise<R> {
+    if (!this.page) throw new Error('Session not started.');
+    return this.page.evaluate(fn);
   }
 
   async close(): Promise<void> {

@@ -20,6 +20,7 @@ A TypeScript CLI tool implementing an explore > plan > test > report workflow fo
   - [autorun](#autorun)
   - [heal](#heal)
   - [repl](#repl)
+  - [clean](#clean)
 - [Commands Summary](#commands-summary)
 - [Screenshots](#screenshots)
 - [Natural Language Prompts](#natural-language-prompts)
@@ -153,7 +154,7 @@ STORAGE_STATE=./auth-profile
 
 ### `explore`
 
-Open a browser, navigate to a URL, capture a snapshot and optional screenshot. Each explore result is registered in the **explore registry** — a searchable index of all snapshots with element metadata (links, headings, buttons, inputs). After each run, the **site profile**, the **per-site website profile** (`website-profiles/<host>.json`), and the **site map** (`<host>-site-map.json` + route detail files) are automatically regenerated.
+Open a browser, navigate to a URL, capture a snapshot and optional screenshot. Each explore result is registered in the **explore registry** — a searchable index of all snapshots with element metadata (links, headings, buttons, inputs). After each run, the **site profile**, the **per-site website profile** (`website-profiles/<host>/site_index.json` + `specs/`), and the **site map** (the same two-tier index + per-route spec files) are automatically regenerated.
 
 ```bash
 pw-cli-agent explore --url https://example.com
@@ -324,6 +325,7 @@ All plans follow a standardized markdown format. The AI planner is instructed to
 - `Dependencies` uses labels: `standalone` for independent tests, `depends: <TC-NAME>` for sequential ordering, `requires: <setup>` for page setup needs.
 - The test runner reads these dependency labels to schedule execution: when running tests in parallel, dependent tests are executed in waves **after** the tests they depend on (see `test`).
 - During planning, if the AI needs a page that hasn't been explored, it appends a `## Pages to Explore` section with `[explore: /path]` annotations. The system explores those URLs and re-invokes the planner with the expanded context.
+- The planner also receives the **site map** from the per-site profile (routes + elements with best-effort CSS selectors/state) and, when passed, an existing codegen/exploration script (`--codegen <file>`), giving it structured context for reliable locators.
 
 Healing plans use the same standardized format.
 
@@ -458,14 +460,17 @@ pw-cli-agent autorun --url https://example.com --max-iterations 5
 # Record a one-time codegen flow before planning (element-ref annotated, feeds the AI generator)
 pw-cli-agent autorun --url https://example.com --codegen
 
+# Reuse an existing codegen/exploration script as reference material
+pw-cli-agent autorun --url https://example.com --codegen ./artifacts/tests/codegen-abc123.spec.ts
+
 # Resume an interrupted run
 pw-cli-agent autorun --resume abc1234
 ```
 
 **Pipeline loop:**
-1. **Explore** — capture accessibility snapshot (once)
-2. **Codegen** *(optional, with `--codegen`)* — record a one-time flow in the browser (viewable via noVNC `http://localhost:6080/vnc.html`); the script is saved to `./artifacts/tests/`, annotated with `[eN]` element refs, and auto-inlined as reference material whenever tests are generated
-3. **Plan** — generate test plan from snapshot via opencode
+1. **Explore** — capture accessibility snapshot (once). The explore feeds the per-site **Website Profile** and **Site Map** (see below), which the planner later uses as structured route + selector context
+2. **Codegen** *(optional, with `--codegen`)* — either record a one-time flow in the browser (viewable via noVNC `http://localhost:6080/vnc.html`; the script is saved to `./artifacts/tests/`, annotated with `[eN]` element refs) or pass an existing codegen/exploration file (`--codegen <file>`) to use it as reference material. Recorded/selected scripts are auto-inlined whenever tests are generated
+3. **Plan** — generate test plan from snapshot via opencode. The planner receives the current site map (routes + elements with best-effort CSS selectors/state) plus any codegen reference script as extra context
 4. **Generate** — extract test code blocks from plan (falls back to opencode generation, which includes any codegen scripts as reference)
 5. **Test** — execute tests via Playwright (dependent tests run after their dependencies)
 6. **Heal** — re-explore failures, generate a corrected healing plan (passing tests preserved)
@@ -481,7 +486,7 @@ The loop repeats steps 4–7 until all tests pass or max iterations reached.
 - `--max-iterations <N>` — maximum loop iterations (default: retries + 1)
 - `--resume <runId>` — resume a previous interrupted run
 - `--profile <path>` — browser profile for auth state (auto-detects `./auth-profile`)
-- `--codegen` — record a one-time codegen flow before planning
+- `--codegen [file]` — record a one-time codegen flow before planning, or pass an existing codegen/exploration file (e.g. `--codegen ./artifacts/tests/codegen-abc123.spec.ts`) to use as reference material instead
 
 State saved to `./artifacts/results/autorun-<runId>/state.json`.
 
@@ -535,6 +540,35 @@ pw-cli-agent repl
 
 Session initializes from `.env` (`TARGET_URL`, `OPENCODE_MODEL`). Use `↑`/`↓` for history, `Tab` for completion.
 
+### `clean`
+
+Remove scratch/temp files and prune old run artifacts so the working tree stays tidy.
+
+```bash
+# Safe default: remove scratch/temp files only (scratch-*.mjs, scratch-*.txt,
+# stray PNGs, duplicate guided-session notes — newest kept)
+pw-cli-agent clean
+
+# Preview what would be removed without deleting anything
+pw-cli-agent clean --dry-run
+
+# Also prune old autorun-* and run-* result dirs (keeps the newest few)
+pw-cli-agent clean --autorun --runs
+
+# Full wipe of artifacts/ (recreates the standard subdirs afterwards)
+pw-cli-agent clean --all
+```
+
+**Options:**
+- `--dry-run` — preview what would be removed without deleting anything
+- `--autorun` — prune old `autorun-*` result dirs, keeping the newest (default: 3)
+- `--runs` — prune old `run-*` result dirs, keeping the newest (default: 5)
+- `--keep-autorun <N>` — autorun dirs to keep when pruning (default: 3)
+- `--keep-runs <N>` — run dirs to keep when pruning (default: 5)
+- `--all` — wipe the entire `artifacts/` directory (explore, plans, tests, reports, results, website-profiles, registry, profiles) and recreate the standard subdirs
+
+Pruning is opt-in; a bare `pw-cli-agent clean` only touches scratch/temp files. The opencode `/clean` slash command wraps this CLI, and the `clean` npm script runs `node dist/index.js clean`.
+
 ## Commands Summary
 
 | Command | Description | Key Options |
@@ -549,9 +583,10 @@ Session initializes from `.env` (`TARGET_URL`, `OPENCODE_MODEL`). Use `↑`/`↓
 | `ui` | Run the interactive Playwright UI test runner (headed, panel served on `8123`) | `--execute`, `--url`, `--profile`, `--ui-host`, `--ui-port` |
 | `report` | Aggregate artifacts into summary report | `--format`, `--output` |
 | `skill` | Generate opencode skill files | `--output-dir`, `--agents` |
-| `autorun` | Loop: explore → [codegen] → plan → generate → test → heal → generate (dependency-ordered parallel tests) | `--url`, `--headed`, `--prompt`, `--max-iterations`, `--resume`, `--profile`, `--codegen` |
+| `autorun` | Loop: explore → [codegen] → plan → generate → test → heal → generate (dependency-ordered parallel tests; planner uses site map + codegen reference) | `--url`, `--headed`, `--prompt`, `--max-iterations`, `--resume`, `--profile`, `--codegen [file]` |
 | `heal` | Re-explore failures (element-not-found aware), generate corrected plan (preserves passing tests) | `--url`, `--model`, `--headed`, `--profile` |
 | `repl` | Start interactive REPL session | — |
+| `clean` | Remove scratch/temp files, prune old autorun/run result dirs | `--dry-run`, `--autorun`, `--runs`, `--keep-autorun`, `--keep-runs`, `--all` |
 
 ## Screenshots
 
@@ -601,12 +636,14 @@ Example `requirements.md`:
 
 ## Explore Registry
 
-Every `explore` command registers its snapshot in `artifacts/explore-registry.json` with structured metadata: URL, title, element count, link count, heading names, and a compact element summary. The `plan` command uses this registry to:
+Every `explore` command registers its snapshot in `artifacts/explore-registry.json` with structured metadata: URL, title, element count, link count, heading names, and a structured element list. The `plan` command uses this registry to:
 
 - **Reuse cached snapshots** — avoids re-exploring the same page
-- **Search records** — `plan --search "login"` finds snapshots containing "login" in URLs, titles, or headings
+- **Search records** — `plan --search "login"` finds snapshots containing "login" in URLs, titles, headings, or elements
 - **Auto-explore unvisited pages** — `plan --explore` finds internal links not yet in the registry and explores the top 3
 - **Build multi-page context** — combines element maps from multiple pages for richer AI prompts
+
+**Deduplication:** registering a snapshot replaces older records for the same URL + title, keeping at most 3 most-recent records per URL. The full parsed element list lives in a **sidecar file** (`artifacts/explore/meta/<snapshot>.json`) so the registry stays compact; entries keep a capped inline preview for lightweight search/display.
 
 ```
 artifacts/explore-registry.json
@@ -615,20 +652,34 @@ artifacts/explore-registry.json
 ├── elementCount: 142
 ├── linkCount: 28
 ├── headingCount: ["Welcome", "Products", "Contact"]
-└── summary: "Links:\n  [e5] \"Login\" → /login\n  ..."
+├── elementsFile: "explore/meta/explore-....json"
+└── elements: [                          # inline preview (first 30)
+    ├── { idx: "e5", role: "link", text: "Login", path: "/login",
+    │      pw_get: "getByRole('link', { name: 'Login' })" }
+    └── ...
+  ]
 ```
+
+Structured element fields: `idx` (`[eN]` accessibility ref — informational only, never used as a selector), `role` (ARIA role), `text` (accessible name), `path` (target URL for links/navigation), `pw_get` (best-effort Playwright locator — may need `.nth()`/selector disambiguation on the live page), plus `selector`, `value`, `required`, `disabled`, `level` when resolvable. Existing registries can be re-parsed and compacted with the internal `reparseRegistry()` helper.
 
 ## Website Profiles
 
-Beyond the flat registry, every `explore` / `guide` snapshot also updates a **structured per-site profile** at `artifacts/website-profiles/<host>.json` (one file per origin, e.g. `mtpc_test.json`). It stores:
+Beyond the flat registry, every `explore` / `guide` snapshot also updates a **structured per-site profile** — one compact directory per origin at `artifacts/website-profiles/<host>/` (e.g. `mtpc_test/`). The profile is stored in a **two-tier layout** so tooling can read a single route's data without loading the whole site:
 
-| Field | Content |
-|-------|---------|
-| `pages` | Per-page record: URL, title, last visited, outbound links (related pages), and the full hierarchical element tree |
-| `registry` | Flat element index across all pages (ref, role, name, page URL, hierarchy path, locator) |
-| `refIndex` | Quick lookup of which pages each `[eN]` ref appears on |
+| File | Content |
+|------|---------|
+| `site_index.json` | **Route index** (~KBs): base URL, `updatedAt`, and one entry per route with path, title, URL, element/link counts and a `spec` file reference |
+| `specs/<route>-<hash>.json` | **Per-route spec**: flat functional element list (interactive roles + semantic containers) with CSS selector, hierarchy path, ref links and DOM state |
 
-Each element carries its hierarchy path (e.g. `main > form > searchbox`), a Playwright locator, a best-effort CSS `selector` (e.g. `input#edit-title-0-value`), and DOM state (`required`, `min`/`max`, `placeholder`) when present, so lookups can be answered without re-parsing snapshots.
+### Functional filtering
+
+Only roles that matter for automation are indexed: interactive widgets (`button`, `link`, `textbox`, `checkbox`, `radio`, `combobox`, `tab`, `switch`, `menuitem`) plus semantic containers (`form`, `dialog`, `main`, `navigation`). Structural noise — `generic`, `group`, `paragraph`, `section`, `heading` (unless a visual assertion needs it), `presentation`, `text`, lists/tables — is dropped. Hierarchy links (`childRefs` / `ancestorRefs` / `path`) are rewritten to the retained nodes, so the tree stays intact while the payload shrinks ~70%.
+
+### Compact serialization
+
+Spec files are written as compact JSON with redundant data pruned: empty values (`value`, `description`, `placeholder`), `disabled: false`, empty ref lists, and duplicate text are omitted. Ref arrays are **collapsed dynamically** — omitted when empty, a plain string when holding one ref, an array only when needed. The original `mtpc_test` profile went from ~17 MB across three redundant files to **~0.9 MB** of two-tier specs.
+
+In memory the profile is hydrated back into per-page element trees (with `[eN]` refs + hierarchy paths), a flat registry, and a `refIndex` for fast lookups — so the `profile` commands below behave exactly as before.
 
 ### Profile commands
 
@@ -641,51 +692,46 @@ pw-cli-agent profile query "Page Title" <url>            # restrict search to on
 pw-cli-agent profile ref e42                             # show pages + paths where ref e42 appears
 pw-cli-agent profile ref e162 <url>                      # narrow a ref to one page
 pw-cli-agent profile pages <url>                         # list pages in a site profile
-pw-cli-agent profile map <url>                           # build the site map (JSON + route details)
+pw-cli-agent profile map <url>                           # (re)build site_index.json + specs/
 ```
 
 `[eN]` refs are per-snapshot, so `profile ref` reports every page the ref appears on; pass a URL to disambiguate. The `guide` REPL uses the profile to disambiguate `click` targets when the live snapshot has multiple matches.
 
 ## Site Map
 
-Every `explore` / `guide` snapshot also regenerates an **overall site map** for the site at `artifacts/website-profiles/<host>-site-map.json`, alongside **per-route detail files** under `artifacts/website-profiles/<host>-routes/<path>.json` (flat element lists with selector + state).
+The overall site map **is** the per-site two-tier profile: `artifacts/website-profiles/<host>/site_index.json` lists every route (path, title, URL, element/link counts, spec file ref), and each route's functional elements live in `specs/<route>-<hash>.json`. `profile map <url>` rebuilds both from the existing profile at any time.
 
-The site map uses a stable, machine-readable schema:
+Each spec element carries its `[eN]` ref, ARIA role, accessible name, hierarchy path (e.g. `main > form > textbox`), a best-effort CSS selector (e.g. `input#edit-title-0-value`), and DOM state (`required`, `min`/`max`, `placeholder`, `disabled`) when present:
 
 ```json
 {
   "site": "mtpc_test",
-  "map_version": 1,
+  "host": "mtpc_test",
+  "map_version": 2,
   "routes": [
     {
       "path": "/node/add/custom_page",
       "title": "Create Standard Page",
-      "elements": [
-        {
-          "id": "e198",
-          "role": "textbox",
-          "label": "Page Title",
-          "children": [],
-          "selector": "input#edit-title-0-value",
-          "state": { "value": "", "min": "", "max": "", "enabled": true, "required": true }
-        }
-      ]
+      "url": "http://mtpc_test/node/add/custom_page",
+      "elementCount": 58,
+      "linkCount": 40,
+      "spec": "specs/node_add_custom_page-9a4c1f.json"
     }
   ]
 }
 ```
 
-`elements` preserves the snapshot hierarchy (non-semantic `generic`/`text` wrappers are flattened away), so landmarks nest their interactive children the same way the page does. Regenerate it at any time from the existing profile with `pw-cli-agent profile map <url>`.
+Specs preserve the snapshot hierarchy (non-semantic wrappers are flattened away), so landmarks nest their interactive children the same way the page does — but at a fraction of the size.
 
 ### Querying the site map
 
-`scripts/query-site-map.mjs` is a targeted query script for the map:
+`scripts/query-site-map.mjs` queries the new `site_index.json` (loading specs on demand) and still reads legacy single-file maps:
 
 ```bash
-node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test-site-map.json "Page Title"
-node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test-site-map.json textbox --json   # machine-readable
-node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test-site-map.json --list            # list routes
-node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test-site-map.json --route /node/add/custom_page
+node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test/site_index.json "Page Title"
+node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test/site_index.json textbox --json   # machine-readable
+node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test/site_index.json --list            # list routes
+node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test/site_index.json --route /node/add/custom_page
 ```
 
 ## Site Profile
@@ -829,7 +875,8 @@ pw-cli-agent
 │   ├── skill    — generate opencode SKILL.md files
 │   ├── autorun  — loop: explore → plan → generate → test → heal → generate
 │   ├── heal     — detect element-not-found errors, re-explore, generate corrected plan (preserves passing tests)
-│   └── repl     — interactive session (tab completion, state tracking)
+│   ├── repl     — interactive session (tab completion, state tracking)
+│   └── clean    — remove scratch/temp files, prune old autorun/run result dirs
 ├── Playwright Session (in-process, no subprocess)
 │   └── lib/playwright-session.ts — chromium.launch() / launchPersistentContext()
 │       ├── goto, click, fill, screenshot, accessibility snapshot
@@ -844,9 +891,9 @@ pw-cli-agent
 ├── Snapshot Parser
 │   └── parseSnapshotElements(yaml) — extract refs, roles, names, links, headings, buttons
 ├── Website Profiles
-│   ├── lib/element-tree.ts — snapshot YAML → hierarchical element tree + TreeRecords (selectors, state)
-│   ├── lib/website-profile.ts — per-origin <host>.json (pages, registry, refIndex)
-│   └── lib/site-map.ts — overall site map + per-route detail JSON (selector/state schema)
+│   ├── lib/element-tree.ts — snapshot YAML → hierarchical element tree + functional TreeRecords (selectors, state)
+│   ├── lib/website-profile.ts — per-origin two-tier profile (site_index + specs; pages, registry, refIndex)
+│   └── lib/site-map.ts — site map: route index + per-route functional element specs (selector/state schema)
 ├── Artifact Manager
 │   └── ./artifacts/{explore,plans,tests,reports,results}/
 └── Config
@@ -877,7 +924,8 @@ agent/
     │   ├── skill.ts                  # OpenCode skill file generation
     │   ├── autorun.ts                # Loop: explore → [codegen] → plan → generate → test → heal
     │   ├── heal.ts                   # Element-not-found detection + re-explore + corrected plan
-    │   └── repl.ts                   # Interactive REPL session
+    │   ├── repl.ts                   # Interactive REPL session
+    │   └── clean.ts                  # Scratch/temp cleanup + run-artifact pruning
     └── lib/
         ├── pw-cli.ts                 # Playwright CLI wrapper (explore/snapshot commands)
         ├── opencode.ts               # OpenCode subprocess wrapper
@@ -887,8 +935,8 @@ agent/
         ├── reference-loader.ts       # Loads user test procedures/screenshots into AI prompts
         ├── explore-registry.ts       # Searchable index of explore snapshots + metadata
         ├── element-tree.ts           # Snapshot YAML → hierarchical element tree + TreeRecords
-        ├── website-profile.ts        # Per-site profile JSON (pages, registry, refIndex)
-        ├── site-map.ts               # Overall site map + per-route detail files
+        ├── website-profile.ts        # Per-site profile: two-tier write (site_index + specs) + hydration
+        ├── site-map.ts               # Site map: route index + per-route functional element specs
         ├── site-profile.ts           # Living site profile (accumulated knowledge from all explores)
         └── prompt-templates.ts       # Reusable prompt templates for opencode
 ```
@@ -958,6 +1006,11 @@ OPENCODE_SERVER_URL=http://host.docker.internal:4096
 STORAGE_STATE=./auth-profile
 ```
 
+## Contribution Rules
+
+- **After every code update, update `README.md`** (and any other affected docs) to reflect the change — new commands, options, behavior, output files, and layout. Documentation edits land in the same change as the code they describe.
+- The full rule set (including the `agent/` build/verify workflow) lives in `AGENTS.md` at the repo root and applies to all agent changes.
+
 ## Dependencies
 
 | Package | Purpose |
@@ -977,8 +1030,8 @@ Internal modules:
 - `snapshot-parser.ts` — parses Playwright YAML snapshots into structured element data (refs, roles, links, headings, buttons)
 - `explore-registry.ts` — searchable index of explore snapshots with element metadata
 - `element-tree.ts` — hierarchical element tree from snapshot YAML (paths, CSS selectors, DOM state)
-- `website-profile.ts` — per-origin structured profile (pages, registry, ref index)
-- `site-map.ts` — overall site map + per-route detail JSON (shared schema)
+- `website-profile.ts` — per-origin structured profile (two-tier: route index + functional per-route specs; pages, registry, ref index in memory)
+- `site-map.ts` — site map: `site_index.json` route index + `specs/<route>.json` functional element lists (shared schema)
 - `site-profile.ts` — living site profile regenerated from the explore registry after each run
 
 ## References

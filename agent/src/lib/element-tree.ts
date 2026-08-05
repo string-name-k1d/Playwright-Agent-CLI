@@ -48,6 +48,10 @@ export interface ElementTree {
 /**
  * Flat registry record for a tree node. Stored per-page inside the website
  * profile so element lookups can be answered without re-parsing snapshots.
+ *
+ * `childRefs` / `ancestorRefs` are stored compactly: omitted entirely when
+ * empty, a plain string when a single ref, and an array otherwise (see
+ * {@link collapseRefs} / {@link refsOf}).
  */
 export interface TreeRecord {
   ref: string;
@@ -68,8 +72,38 @@ export interface TreeRecord {
   pageUrl: string;
   path: string;
   depth: number;
-  childRefs: string[];
-  ancestorRefs: string[];
+  childRefs?: string | string[];
+  ancestorRefs?: string | string[];
+}
+
+/**
+ * Roles retained by the functional profile filter: interactive widgets plus
+ * the semantic containers that matter for planning locators. Everything else
+ * (generic, group, paragraph, section, heading, presentation, text, …) is
+ * noise for automation and is dropped from the stored profile.
+ */
+const FUNCTIONAL_ROLES = new Set([
+  'button', 'link', 'textbox', 'checkbox', 'radio', 'combobox', 'tab', 'switch', 'menuitem',
+  'form', 'dialog', 'main', 'navigation',
+]);
+
+export function isFunctionalRole(role: string): boolean {
+  return FUNCTIONAL_ROLES.has(role);
+}
+
+/** Normalizes a possibly-collapsed ref list back into an array. */
+export function refsOf(x: string | string[] | undefined): string[] {
+  if (x === undefined) return [];
+  return Array.isArray(x) ? x : [x];
+}
+
+/**
+ * Collapses a ref list for compact storage: omitted when empty, a plain
+ * string when it holds a single ref, an array otherwise.
+ */
+export function collapseRefs(list: string[]): string | string[] | undefined {
+  if (list.length === 0) return undefined;
+  return list.length === 1 ? list[0] : list;
 }
 
 const INPUT_ROLES = new Set([
@@ -272,9 +306,69 @@ export function toTreeRecords(tree: ElementTree, pageUrl: string): TreeRecord[] 
       pageUrl,
       path: n.path,
       depth: n.depth,
-      childRefs: n.children.map(c => c.ref),
-      ancestorRefs: n.ancestors,
+      childRefs: collapseRefs(n.children.map(c => c.ref)),
+      ancestorRefs: collapseRefs(n.ancestors),
     }));
+}
+
+/**
+ * Builds functional TreeRecords for the website profile. Only interactive
+ * roles (button, link, textbox, checkbox, radio, combobox, tab, switch,
+ * menuitem) and semantic containers (form, dialog, main, navigation) are
+ * retained; discarded nodes (generic, group, paragraph, section, heading,
+ * presentation, text, …) are removed from the hierarchy, so `childRefs`,
+ * `ancestorRefs` and `path` are rewritten to reference only the kept nodes.
+ *
+ * Fields are pruned for storage: empty/duplicate values are dropped and ref
+ * lists are collapsed (omitted when empty, scalar when single).
+ */
+export function functionalRecords(tree: ElementTree, pageUrl: string): TreeRecord[] {
+  const kept = new Set<string>();
+  const nodes: TreeNode[] = [];
+  for (const n of tree.nodes) {
+    if (n.role === 'RootWebArea' || !isFunctionalRole(n.role)) continue;
+    kept.add(n.ref);
+    nodes.push(n);
+  }
+
+  const keepChildRefs = (n: TreeNode): string[] => {
+    const out: string[] = [];
+    for (const c of n.children) {
+      if (kept.has(c.ref)) out.push(c.ref);
+      else out.push(...keepChildRefs(c));
+    }
+    return out;
+  };
+
+  return nodes.map(n => {
+    const ancestors = n.ancestors.filter(a => kept.has(a));
+    const children = keepChildRefs(n);
+    const path = ancestors.length > 0 ? [...ancestors, n.role].join(' > ') : n.role;
+
+    const r: TreeRecord = {
+      ref: n.ref,
+      role: n.role,
+      name: n.name,
+      pageUrl,
+      path,
+      depth: ancestors.length,
+      childRefs: collapseRefs(children),
+      ancestorRefs: collapseRefs(ancestors),
+    };
+    if (n.text !== undefined && n.text !== '') r.text = n.text;
+    if (n.url !== undefined && n.url !== '') r.url = n.url;
+    if (n.value !== undefined && n.value !== '') r.value = n.value;
+    if (n.description !== undefined && n.description !== '') r.description = n.description;
+    if (n.level !== undefined && n.level > 0) r.level = n.level;
+    if (n.selector !== undefined && n.selector !== '') r.selector = n.selector;
+    if (n.domId !== undefined && n.domId !== '') r.domId = n.domId;
+    if (n.required === true) r.required = true;
+    if (n.min !== undefined) r.min = n.min;
+    if (n.max !== undefined) r.max = n.max;
+    if (n.placeholder !== undefined && n.placeholder !== '') r.placeholder = n.placeholder;
+    if (n.disabled === true) r.disabled = true;
+    return r;
+  });
 }
 
 /**
@@ -304,7 +398,7 @@ export function treeFromRecords(records: TreeRecord[]): ElementTree | null {
       placeholder: r.placeholder,
       depth: r.depth,
       path: r.path,
-      ancestors: r.ancestorRefs,
+      ancestors: refsOf(r.ancestorRefs),
       children: [],
     });
   }
@@ -312,7 +406,8 @@ export function treeFromRecords(records: TreeRecord[]): ElementTree | null {
   const roots: TreeNode[] = [];
   for (const r of records) {
     const node = byRef.get(r.ref)!;
-    const parentRef = r.ancestorRefs[r.ancestorRefs.length - 1];
+    const ancestors = refsOf(r.ancestorRefs);
+    const parentRef = ancestors[ancestors.length - 1];
     const parent = parentRef ? byRef.get(parentRef) : undefined;
     if (parent) parent.children.push(node);
     else roots.push(node);
@@ -320,7 +415,7 @@ export function treeFromRecords(records: TreeRecord[]): ElementTree | null {
 
   for (const r of records) {
     const node = byRef.get(r.ref)!;
-    node.children = r.childRefs.map(c => byRef.get(c)).filter((n): n is TreeNode => !!n);
+    node.children = refsOf(r.childRefs).map(c => byRef.get(c)).filter((n): n is TreeNode => !!n);
   }
 
   const root = roots[0] ?? null;

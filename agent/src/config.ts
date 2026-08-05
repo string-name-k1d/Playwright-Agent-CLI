@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 export interface Config {
+  /*! Url for  target website */
   targetUrl?: string;
   opencodeModel?: string;
   outputDir: string;

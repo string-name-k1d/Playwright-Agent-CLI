@@ -1,14 +1,16 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExploreEntry } from './explore-registry.js';
-import { buildElementTree, toTreeRecords, treeFromRecords, type ElementTree, type TreeRecord } from './element-tree.js';
-import { writeSiteMap } from './site-map.js';
+import { buildElementTree, functionalRecords, treeFromRecords, type ElementTree, type TreeRecord } from './element-tree.js';
+import { writeSiteMap, loadSiteMap, hostProfileDir, siteMapFileFor, type SiteIndex, type RouteSpec } from './site-map.js';
 
 /**
- * Per-website structured profile. Each origin gets its own JSON file under
- * `website-profiles/<host>.json` containing a page tree, per-page element
- * trees (with [eN] refs + hierarchy paths), and a flat registry + ref index
- * for fast element lookups.
+ * Per-website structured profile. Each origin gets its own directory under
+ * `website-profiles/<host>/` containing a compact route index
+ * (`site_index.json`) and one functional-element spec file per route
+ * (`specs/<route_name>.json`). In memory the profile is hydrated back into
+ * per-page element trees (with [eN] refs + hierarchy paths), a flat registry,
+ * and a ref index for fast element lookups.
  */
 
 export interface PageRecord {
@@ -69,54 +71,108 @@ export function normalizeUrl(url: string): string {
 }
 
 export function profileFileFor(url: string, baseDir: string): string {
-  return join(websiteProfileDir(baseDir), `${hostFromUrl(url)}.json`);
+  return siteMapFileFor(hostFromUrl(url), baseDir);
 }
 
 export function loadWebsiteProfile(url: string, baseDir: string): WebsiteProfile | null {
-  const path = profileFileFor(url, baseDir);
-  if (!existsSync(path)) return null;
+  return loadWebsiteProfileForHost(hostFromUrl(url), baseDir);
+}
+
+export function loadWebsiteProfileForHost(host: string, baseDir: string): WebsiteProfile | null {
+  const index = loadSiteMap(host, baseDir);
+  if (index) return hydrateWebsiteProfile(host, baseDir, index);
+
+  // Legacy fallback: single-file monolith (`<host>.json`) from before the
+  // two-tier split. Read as-is; the next write migrates it.
+  const legacy = join(websiteProfileDir(baseDir), `${host}.json`);
+  if (!existsSync(legacy)) return null;
   try {
-    return JSON.parse(readFileSync(path, 'utf-8'));
+    return JSON.parse(readFileSync(legacy, 'utf-8'));
   } catch {
     return null;
   }
 }
 
-export function loadWebsiteProfileForHost(host: string, baseDir: string): WebsiteProfile | null {
-  const path = join(websiteProfileDir(baseDir), `${host}.json`);
-  if (!existsSync(path)) return null;
+/** Rehydrates a full WebsiteProfile from the compact two-tier layout. */
+function hydrateWebsiteProfile(host: string, baseDir: string, index: SiteIndex): WebsiteProfile | null {
+  const pages: PageRecord[] = [];
+  for (const route of index.routes) {
+    try {
+      const specPath = join(hostProfileDir(host, baseDir), route.spec);
+      if (!existsSync(specPath)) continue;
+      const spec = JSON.parse(readFileSync(specPath, 'utf-8')) as RouteSpec;
+      pages.push({
+        url: route.url,
+        title: route.title,
+        lastVisited: route.lastVisited,
+        elementCount: route.elementCount,
+        linkCount: route.linkCount,
+        links: spec.links ?? [],
+        elements: spec.elements ?? [],
+      });
+    } catch {
+      // Skip an unreadable route spec rather than dropping the whole profile.
+    }
+  }
+  if (pages.length === 0) return null;
+
+  const registry: RegistryEntry[] = pages.flatMap(p => p.elements);
+  const refIndex: Record<string, string[]> = {};
+  for (const r of registry) {
+    const list = refIndex[r.ref] ?? (refIndex[r.ref] = []);
+    if (!list.includes(r.pageUrl)) list.push(r.pageUrl);
+  }
+  return {
+    host,
+    baseUrl: index.baseUrl,
+    updatedAt: index.updatedAt,
+    pages,
+    registry,
+    refIndex,
+  };
+}
+
+function isDirectory(abs: string): boolean {
   try {
-    return JSON.parse(readFileSync(path, 'utf-8'));
+    return statSync(abs).isDirectory();
   } catch {
-    return null;
+    return false;
   }
 }
 
 export function listWebsiteProfiles(baseDir: string): WebsiteProfile[] {
   const dir = websiteProfileDir(baseDir);
   if (!existsSync(dir)) return [];
-  let files: string[] = [];
+  let names: string[] = [];
   try {
-    files = readdirSafe(dir).filter(f => f.endsWith('.json'));
+    names = readdirSync(dir);
   } catch {
     return [];
   }
+
   const profiles: WebsiteProfile[] = [];
-  for (const f of files) {
+  const newHosts = new Set<string>();
+  for (const name of names) {
+    const abs = join(dir, name);
+    if (isDirectory(abs) && existsSync(join(abs, 'site_index.json'))) newHosts.add(name);
+  }
+  for (const host of newHosts) {
+    const index = loadSiteMap(host, baseDir);
+    if (!index) continue;
+    const p = hydrateWebsiteProfile(host, baseDir, index);
+    if (p) profiles.push(p);
+  }
+  // Legacy single-file monoliths (skipped when a two-tier dir exists for the host).
+  for (const f of names) {
+    if (!f.endsWith('.json') || f.endsWith('-site-map.json')) continue;
+    const stem = f.slice(0, -5);
+    if (newHosts.has(stem) || isDirectory(join(dir, f))) continue;
     try {
       const p = JSON.parse(readFileSync(join(dir, f), 'utf-8'));
       if (p && Array.isArray(p.pages) && Array.isArray(p.registry)) profiles.push(p);
     } catch {}
   }
   return profiles;
-}
-
-function readdirSafe(dir: string): string[] {
-  try {
-    return readdirSync(dir);
-  } catch {
-    return [];
-  }
 }
 
 function readSnapshot(entry: ExploreEntry): string {
@@ -127,17 +183,11 @@ function readSnapshot(entry: ExploreEntry): string {
   }
 }
 
-function saveProfile(profile: WebsiteProfile, baseDir: string): void {
-  const dir = websiteProfileDir(baseDir);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const path = profileFileFor(profile.baseUrl || `http://${profile.host}`, baseDir);
-  writeFileSync(path, JSON.stringify(profile, null, 2), 'utf-8');
-}
-
 /**
  * Updates (or creates) the website profile for the entry's origin from the
  * snapshot's element tree. Merges into the page record for the entry URL and
- * rebuilds the registry + ref index from all pages.
+ * rebuilds the registry + ref index from all pages. Persisted as the compact
+ * two-tier layout (`site_index.json` + `specs/<route_name>.json`).
  *
  * @param entry - Explore entry (url, title, snapshotPath)
  * @param baseDir - Artifacts base directory (website-profiles/ lives here)
@@ -162,14 +212,15 @@ export function updateWebsiteProfile(entry: ExploreEntry, baseDir: string, snaps
     refIndex: {},
   };
 
+  const records = functionalRecords(tree, normUrl);
   const page: PageRecord = {
     url: normUrl,
     title: entry.title,
     lastVisited: now,
-    elementCount: tree.nodes.length,
+    elementCount: records.length,
     linkCount: tree.links.length,
     links: tree.links.map(l => ({ ref: l.ref, name: l.name, url: l.url ?? '' })),
-    elements: toTreeRecords(tree, normUrl),
+    elements: records,
   };
 
   const idx = profile.pages.findIndex(p => p.url === normUrl);
@@ -185,7 +236,6 @@ export function updateWebsiteProfile(entry: ExploreEntry, baseDir: string, snaps
   }
   profile.updatedAt = now;
 
-  saveProfile(profile, baseDir);
   writeSiteMap(profile, baseDir);
   return profile;
 }

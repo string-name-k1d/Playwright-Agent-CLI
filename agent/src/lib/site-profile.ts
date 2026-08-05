@@ -255,7 +255,7 @@ export function saveSiteProfile(baseDir: string): string | null {
     lines.push('');
     for (const sp of siteProfiles) {
       lines.push(`### ${sp.host}`);
-      lines.push(`- **Profile:** \`website-profiles/${sp.host}.json\``);
+      lines.push(`- **Profile:** \`website-profiles/${sp.host}/site_index.json\` (+ \`specs/\` per route)`);
       lines.push(`- **Base URL:** ${sp.baseUrl}`);
       lines.push(`- **Pages:** ${sp.pages.length}`);
       lines.push(`- **Elements indexed:** ${sp.registry.length}`);

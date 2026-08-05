@@ -26,13 +26,15 @@ export function getLatestFile(subdir: string, baseDir: string = './artifacts'): 
 
   const files = readdirSync(dir)
     .filter((f) => !f.startsWith('.'))
-    .map((f) => ({
-      name: f,
-      time: statSync(join(dir, f)).mtimeMs,
-    }))
+    .map((f) => {
+      const full = join(dir, f);
+      const st = statSync(full);
+      return { name: f, full, time: st.mtimeMs, isFile: st.isFile() };
+    })
+    .filter((f) => f.isFile)
     .sort((a, b) => b.time - a.time);
 
-  return files.length > 0 ? join(dir, files[0].name) : null;
+  return files.length > 0 ? files[0].full : null;
 }
 
 export function saveArtifact(

@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { exploreCommand } from './explore.js';
 import { savePlan, ensureArtifactsDir, getLatestFile } from '../lib/artifacts.js';
@@ -71,49 +71,48 @@ export function parseFailures(resultsDir: string): FailedTest[] {
 
   if (runDirs.length === 0) return failures;
 
-  const latestRun = join(resultsDir, runDirs[0].name);
+  // Scan run dirs (newest first) for error files, stopping at the first
+  // dir that has any.  This avoids a race where the newest run dir was
+  // just created but its errors/ has not been populated yet.
+  for (const runDir of runDirs) {
+    const runPath = join(resultsDir, runDir.name);
 
-  // New flat structure: errors/*.md
-  const errorsDir = join(latestRun, 'errors');
-  if (existsSync(errorsDir)) {
-    for (const file of readdirSync(errorsDir).filter(f => f.endsWith('.md'))) {
-      const errorContext = readFileSync(join(errorsDir, file), 'utf-8');
+    // New flat structure: errors/*.md
+    const errorsDir = join(runPath, 'errors');
+    if (existsSync(errorsDir)) {
+      const mdFiles = readdirSync(errorsDir).filter(f => f.endsWith('.md'));
+      if (mdFiles.length > 0) {
+        for (const file of mdFiles) {
+          const errorContext = readFileSync(join(errorsDir, file), 'utf-8');
+          const nameMatch = errorContext.match(/Name:\s*(.+?)(?:\n|$)/);
+          const name = nameMatch ? nameMatch[1].trim() : file.replace(/\.md$/, '').replace(/-/g, ' ');
+          const fileMatch = errorContext.match(/Location:\s*(.+?)(?:\n|$)/);
+          const testFile = fileMatch ? fileMatch[1].trim() : '';
+          const tsBlocks = [...errorContext.matchAll(/```ts?\n([\s\S]*?)```/g)];
+          const testSource = tsBlocks.length > 0 ? tsBlocks[tsBlocks.length - 1][1].trim() : '';
+          failures.push({ name, file: testFile, errorContext, testSource });
+        }
+        return failures;
+      }
+    }
 
+    // Legacy fallback: test-results/*/error-context.md
+    const testResultsDir = join(runPath, 'test-results');
+    if (!existsSync(testResultsDir)) continue;
+    const testDirs = readdirSync(testResultsDir).filter(d => !d.startsWith('.'));
+    for (const dir of testDirs) {
+      const errorCtxPath = join(testResultsDir, dir, 'error-context.md');
+      if (!existsSync(errorCtxPath)) continue;
+      const errorContext = readFileSync(errorCtxPath, 'utf-8');
       const nameMatch = errorContext.match(/Name:\s*(.+?)(?:\n|$)/);
-      const name = nameMatch ? nameMatch[1].trim() : file.replace(/\.md$/, '').replace(/-/g, ' ');
-
+      const name = nameMatch ? nameMatch[1].trim() : dir;
       const fileMatch = errorContext.match(/Location:\s*(.+?)(?:\n|$)/);
-      const testFile = fileMatch ? fileMatch[1].trim() : '';
-
+      const file = fileMatch ? fileMatch[1].trim() : '';
       const tsBlocks = [...errorContext.matchAll(/```ts?\n([\s\S]*?)```/g)];
       const testSource = tsBlocks.length > 0 ? tsBlocks[tsBlocks.length - 1][1].trim() : '';
-
-      failures.push({ name, file: testFile, errorContext, testSource });
+      failures.push({ name, file, errorContext, testSource });
     }
-    return failures;
-  }
-
-  // Legacy fallback: test-results/*/error-context.md
-  const testResultsDir = join(latestRun, 'test-results');
-  if (!existsSync(testResultsDir)) return failures;
-
-  const testDirs = readdirSync(testResultsDir).filter(d => !d.startsWith('.'));
-  for (const dir of testDirs) {
-    const errorCtxPath = join(testResultsDir, dir, 'error-context.md');
-    if (!existsSync(errorCtxPath)) continue;
-
-    const errorContext = readFileSync(errorCtxPath, 'utf-8');
-
-    const nameMatch = errorContext.match(/Name:\s*(.+?)(?:\n|$)/);
-    const name = nameMatch ? nameMatch[1].trim() : dir;
-
-    const fileMatch = errorContext.match(/Location:\s*(.+?)(?:\n|$)/);
-    const file = fileMatch ? fileMatch[1].trim() : '';
-
-    const tsBlocks = [...errorContext.matchAll(/```ts?\n([\s\S]*?)```/g)];
-    const testSource = tsBlocks.length > 0 ? tsBlocks[tsBlocks.length - 1][1].trim() : '';
-
-    failures.push({ name, file, errorContext, testSource });
+    if (failures.length > 0) return failures;
   }
 
   return failures;
@@ -160,7 +159,6 @@ export function detectElementNotFoundErrors(failures: FailedTest[]): ElementNotF
 
 function statMs(path: string): number {
   try {
-    const { statSync } = require('node:fs');
     return statSync(path).mtimeMs;
   } catch {
     return 0;

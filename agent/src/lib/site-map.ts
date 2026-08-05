@@ -1,7 +1,8 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, readdirSync } from 'node:fs';
+import { join, basename } from 'node:path';
+import { createHash } from 'node:crypto';
 import type { WebsiteProfile } from './website-profile.js';
-import { treeFromRecords, type TreeRecord } from './element-tree.js';
+import { treeFromRecords, refsOf, type TreeRecord } from './element-tree.js';
 
 /**
  * Overall site map in the shared schema. Mirrors the human-facing example:
@@ -72,18 +73,66 @@ export interface RouteDetail {
   elements: RouteDetailElement[];
 }
 
-const MAP_VERSION = 1;
+/**
+ * Compact per-route spec file. This is the two-tier storage format: the
+ * per-site `site_index.json` holds only route metadata (URLs, counts, spec
+ * file refs) while the full functional element lists live one-per-route in
+ * `<host>/specs/<route_name>.json`. Elements are functional TreeRecords
+ * (interactive roles + semantic containers) with empty/duplicate fields
+ * pruned and ref arrays collapsed.
+ */
+export interface RouteSpec {
+  path: string;
+  title: string;
+  url: string;
+  lastVisited: string;
+  elementCount: number;
+  linkCount: number;
+  links: { ref: string; name: string; url: string }[];
+  elements: TreeRecord[];
+}
+
+/** A route entry in the site index (no element payload — see {@link RouteSpec}). */
+export interface SiteIndexRoute {
+  path: string;
+  title: string;
+  url: string;
+  lastVisited: string;
+  elementCount: number;
+  linkCount: number;
+  /** Relative path to the route's spec file (e.g. "specs/style_guide.json"). */
+  spec: string;
+}
+
+export interface SiteIndex {
+  site: string;
+  host: string;
+  baseUrl: string;
+  map_version: number;
+  updatedAt: string;
+  routes: SiteIndexRoute[];
+}
+
+const MAP_VERSION = 2;
+
+export function websiteProfilesDir(baseDir: string): string {
+  return join(baseDir, 'website-profiles');
+}
+
+export function hostProfileDir(host: string, baseDir: string): string {
+  return join(websiteProfilesDir(baseDir), host);
+}
 
 export function siteMapFileFor(host: string, baseDir: string): string {
-  return join(websiteProfilesDir(baseDir), `${host}-site-map.json`);
+  return join(hostProfileDir(host, baseDir), 'site_index.json');
 }
 
 export function routeDetailDir(host: string, baseDir: string): string {
-  return join(websiteProfilesDir(baseDir), `${host}-routes`);
+  return join(hostProfileDir(host, baseDir), 'specs');
 }
 
-function websiteProfilesDir(baseDir: string): string {
-  return join(baseDir, 'website-profiles');
+export function specFileFor(host: string, path: string, baseDir: string): string {
+  return join(routeDetailDir(host, baseDir), `${routeFileName(routePathFor(path))}.json`);
 }
 
 export function routePathFor(url: string): string {
@@ -95,9 +144,16 @@ export function routePathFor(url: string): string {
   }
 }
 
+/**
+ * Maps a route path to a spec filename. The slug keeps the name human
+ * readable (e.g. `/node/213` → `node_213`); a short path hash guarantees
+ * uniqueness so paths that share a slug (e.g. `/` and `/...`) can't collide.
+ */
 export function routeFileName(path: string): string {
-  const safe = path.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
-  return safe || 'index';
+  const slug = path.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  const base = slug || 'index';
+  const hash = createHash('sha1').update(path).digest('hex').slice(0, 6);
+  return `${base}-${hash}`;
 }
 
 function toState(r: TreeRecord): ElementState {
@@ -143,7 +199,7 @@ function treeRecordToMapElement(r: TreeRecord, all: Map<string, TreeRecord>): Si
 /** Expands a record's children, flattening non-semantic wrappers (text, generic). */
 function mapChildren(r: TreeRecord, all: Map<string, TreeRecord>): SiteMapElement[] {
   const out: SiteMapElement[] = [];
-  for (const c of r.childRefs) {
+  for (const c of refsOf(r.childRefs)) {
     const rec = all.get(c);
     if (!rec) continue;
     if (rec.role === 'text' || rec.role === 'generic') {
@@ -177,7 +233,7 @@ export function buildSiteMap(profile: WebsiteProfile): SiteMap {
   const routes: SiteMapRoute[] = [];
   for (const page of profile.pages) {
     const all = new Map<string, TreeRecord>(page.elements.map(r => [r.ref, r]));
-    const roots = page.elements.filter(r => r.ancestorRefs.every(ref => !all.has(ref)));
+    const roots = page.elements.filter(r => refsOf(r.ancestorRefs).every(ref => !all.has(ref)));
     routes.push({
       path: routePathFor(page.url),
       title: page.title,
@@ -207,27 +263,84 @@ export function buildRouteDetail(profile: WebsiteProfile, path: string): RouteDe
 }
 
 /**
- * Writes the overall `site-map.json` plus one detail file per route under
- * `<host>-routes/`. Each detail file contains the full flat element list with
- * selector + state, so tooling can jump straight to a specific page's content.
+ * Persists the site profile in the compact two-tier format:
+ *
+ *   website-profiles/<host>/site_index.json     — route metadata index (~KB)
+ *   website-profiles/<host>/specs/<route>.json  — per-route functional elements
+ *
+ * The in-memory `SiteMap` (with embedded element trees) is returned for
+ * tooling that wants the full structure. Legacy single-file artifacts
+ * (`<host>-site-map.json`, `<host>-routes/`) are removed once migrated.
  */
 export function writeSiteMap(profile: WebsiteProfile, baseDir: string): SiteMap {
   const map = buildSiteMap(profile);
-  const mapPath = siteMapFileFor(profile.host, baseDir);
-  writeFileSync(mapPath, JSON.stringify(map, null, 2), 'utf-8');
+  const host = profile.host;
 
-  const dir = routeDetailDir(profile.host, baseDir);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  for (const route of map.routes) {
-    const detail = buildRouteDetail(profile, route.path);
-    if (!detail) continue;
-    const file = join(dir, `${routeFileName(route.path)}.json`);
-    writeFileSync(file, JSON.stringify(detail, null, 2), 'utf-8');
+  const hostDir = hostProfileDir(host, baseDir);
+  mkdirSync(hostDir, { recursive: true });
+  mkdirSync(routeDetailDir(host, baseDir), { recursive: true });
+
+  const index: SiteIndex = {
+    site: host,
+    host,
+    baseUrl: profile.baseUrl,
+    map_version: MAP_VERSION,
+    updatedAt: profile.updatedAt,
+    routes: profile.pages.map(p => {
+      const path = routePathFor(p.url);
+      return {
+        path,
+        title: p.title,
+        url: p.url,
+        lastVisited: p.lastVisited,
+        elementCount: p.elementCount,
+        linkCount: p.linkCount,
+        spec: join('specs', `${routeFileName(path)}.json`).replace(/\\/g, '/'),
+      };
+    }),
+  };
+  writeFileSync(siteMapFileFor(host, baseDir), JSON.stringify(index, null, 2), 'utf-8');
+
+  for (const p of profile.pages) {
+    const spec: RouteSpec = {
+      path: routePathFor(p.url),
+      title: p.title,
+      url: p.url,
+      lastVisited: p.lastVisited,
+      elementCount: p.elementCount,
+      linkCount: p.linkCount,
+      links: p.links,
+      elements: p.elements,
+    };
+    writeFileSync(specFileFor(host, p.url, baseDir), JSON.stringify(spec), 'utf-8');
   }
+
+  // Prune stale spec files no longer referenced by the index.
+  try {
+    const referenced = new Set(index.routes.map(r => basename(r.spec)));
+    for (const f of readdirSync(routeDetailDir(host, baseDir))) {
+      if (!referenced.has(f)) rmSync(join(routeDetailDir(host, baseDir), f), { force: true });
+    }
+  } catch {}
+
+  // Drop legacy single-file artifacts now that two-tier files exist.
+  const legacyMap = join(websiteProfilesDir(baseDir), `${host}-site-map.json`);
+  const legacyRoutes = join(websiteProfilesDir(baseDir), `${host}-routes`);
+  const legacyMonolith = join(websiteProfilesDir(baseDir), `${host}.json`);
+  for (const f of [legacyMap, legacyMonolith]) {
+    try {
+      if (existsSync(f)) rmSync(f);
+    } catch {}
+  }
+  try {
+    if (existsSync(legacyRoutes)) rmSync(legacyRoutes, { recursive: true, force: true });
+  } catch {}
+
   return map;
 }
 
-export function loadSiteMap(host: string, baseDir: string): SiteMap | null {
+/** Reads the compact site index (`site_index.json`) for a host, if present. */
+export function loadSiteMap(host: string, baseDir: string): SiteIndex | null {
   const path = siteMapFileFor(host, baseDir);
   if (!existsSync(path)) return null;
   try {

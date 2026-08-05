@@ -1,19 +1,21 @@
 #!/usr/bin/env node
-// Targeted query script for the overall site map produced by `profile map`
-// (website-profiles/<host>-site-map.json).
+// Targeted query script for the site map produced by `profile map`.
+// Supports both the compact two-tier layout (site_index.json + specs/<route>.json)
+// and the legacy single-file <host>-site-map.json.
 //
 // Usage:
-//   node scripts/query-site-map.mjs <site-map.json> <query>          match label/role/selector/id
-//   node scripts/query-site-map.mjs <site-map.json> --list           list all routes
-//   node scripts/query-site-map.mjs <site-map.json> --route <path>   dump one route's element tree
-//   node scripts/query-site-map.mjs <site-map.json> --query <q> --json   machine-readable output
+//   node scripts/query-site-map.mjs <site-index.json> <query>        match label/role/selector/id
+//   node scripts/query-site-map.mjs <site-index.json> --list         list all routes
+//   node scripts/query-site-map.mjs <site-index.json> --route <path> dump one route's element tree
+//   node scripts/query-site-map.mjs <site-index.json> --query <q> --json   machine-readable output
 //
 // Examples:
-//   node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test-site-map.json "Full Name"
-//   node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test-site-map.json "input"
-//   node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test-site-map.json --route /style-guide-newsletter
+//   node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test/site_index.json "Full Name"
+//   node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test/site_index.json "input"
+//   node scripts/query-site-map.mjs artifacts/website-profiles/mtpc_test/site_index.json --route /style-guide-newsletter
 
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 function fail(msg) {
   console.error(msg);
@@ -31,13 +33,68 @@ try {
   fail(`Cannot read site map "${mapFile}": ${e.message}`);
 }
 
+// Normalize routes to the shared in-memory shape:
+//   { path, title, elements: [{ id, role, label, selector, state, children, lineagePath? }] }
+// New two-tier layout: index routes carry a `spec` file ref and no embedded
+// elements — load each spec (flat functional records) and surface `path` as
+// lineage. Legacy layout: elements are embedded directly.
+function stateFromRecord(r) {
+  const hasAny = r.value !== undefined || r.min !== undefined || r.max !== undefined ||
+    r.required !== undefined || r.disabled !== undefined;
+  if (!hasAny) return undefined;
+  return {
+    value: r.value ?? '',
+    min: r.min !== undefined ? String(r.min) : '',
+    max: r.max !== undefined ? String(r.max) : '',
+    enabled: r.disabled !== true,
+    required: r.required === true,
+  };
+}
+
+function recordToElement(r) {
+  return {
+    id: r.ref,
+    role: r.role,
+    label: r.name ?? '',
+    selector: r.selector,
+    state: stateFromRecord(r),
+    children: [],
+    lineagePath: r.path,
+  };
+}
+
+function normalizeRoutes() {
+  if (!map.routes || map.routes.length === 0) return [];
+  if (map.routes.some(r => r.spec)) {
+    const baseDir = dirname(mapFile);
+    return map.routes.map(r => {
+      let elements = [];
+      try {
+        const spec = JSON.parse(readFileSync(join(baseDir, r.spec), 'utf-8'));
+        elements = (spec.elements ?? []).map(recordToElement);
+      } catch (e) {
+        console.error(`warning: cannot read spec for ${r.path}: ${e.message}`);
+      }
+      return { path: r.path, title: r.title, elements };
+    });
+  }
+  // Legacy embedded-element layout — keep the nested `children` trees.
+  return map.routes.map(r => ({
+    path: r.path,
+    title: r.title,
+    elements: (r.elements ?? []).map(el => ({ ...el, children: el.children ?? [] })),
+  }));
+}
+
+const routes = normalizeRoutes();
+const totalElements = routes.reduce((n, r) => n + countElements(r.elements), 0);
+
 const rest = args.slice(1);
 
 if (rest.includes('--list')) {
-  const total = map.routes.reduce((n, r) => n + countElements(r.elements), 0);
-  console.log(`Site: ${map.site}  (map_version ${map.map_version})`);
-  console.log(`Routes: ${map.routes.length}  Elements: ${total}\n`);
-  for (const r of map.routes) {
+  console.log(`Site: ${map.site ?? map.host ?? '?'}  (map_version ${map.map_version})`);
+  console.log(`Routes: ${routes.length}  Elements: ${totalElements}\n`);
+  for (const r of routes) {
     console.log(`  ${r.path.padEnd(40)} ${r.title}  [${countElements(r.elements)} els]`);
   }
   process.exit(0);
@@ -47,7 +104,7 @@ const routeIdx = rest.indexOf('--route');
 if (routeIdx >= 0) {
   const path = rest[routeIdx + 1];
   if (!path) fail('--route requires a path, e.g. --route /style-guide-newsletter');
-  const route = map.routes.find(r => r.path === path);
+  const route = routes.find(r => r.path === path);
   if (!route) fail(`Route not found: ${path}`);
   console.log(`Route: ${route.path} — ${route.title}\n`);
   for (const el of route.elements) printElement(el, '');
@@ -60,13 +117,15 @@ if (!queryArg) fail('Provide a query, --list, or --route <path>.');
 const query = queryArg.toLowerCase();
 
 const hits = [];
-for (const route of map.routes) {
+for (const route of routes) {
   const walk = (el, lineage) => {
     const haystack = [el.label, el.role, el.selector ?? '', el.id ?? ''].join(' ').toLowerCase();
     if (haystack.includes(query)) hits.push({ route, element: el, lineage });
     for (const c of el.children) walk(c, `${lineage} > ${el.role}`);
   };
-  for (const el of route.elements) walk(el, el.role);
+  for (const el of route.elements) {
+    walk(el, el.lineagePath || el.role);
+  }
 }
 
 if (jsonFlag) {

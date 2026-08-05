@@ -1,0 +1,16 @@
+HOSTNAME=23556fff10e7
+PWD=/workspace/agent
+HOME=/root
+LANG=C.UTF-8
+NOVNC_PORT=6080
+PW_CLI_HEADED=false
+PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+OPENCODE_SERVER_URL=
+DISPLAY=:99
+SHLVL=1
+TARGET_URL=http://mtpc_test
+LC_ALL=C.UTF-8
+VNC_PORT=5900
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+OPENCODE_MODEL=
+_=/usr/bin/env
