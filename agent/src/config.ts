@@ -13,6 +13,9 @@ export interface Config {
   snapshotDepth: number;
   maxRetries: number;
   storageState?: string;
+  /*! HTTP Basic Auth credentials for sites behind an nginx auth gate */
+  basicAuthUser?: string;
+  basicAuthPass?: string;
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -39,6 +42,10 @@ export function loadConfig(overridePath?: string): Config {
   let fileConfig: Partial<Config> = {};
 
   const configPath = overridePath ?? findConfigFile();
+  if (overridePath && !existsSync(overridePath)) {
+    console.error(`Error: config file not found: ${overridePath}`);
+    process.exit(1);
+  }
   if (configPath && existsSync(configPath)) {
     try {
       fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
@@ -53,8 +60,21 @@ export function loadConfig(overridePath?: string): Config {
   if (process.env.PW_CLI_HEADED) envConfig.headed = process.env.PW_CLI_HEADED === 'true';
   if (process.env.PW_CLI_OUTPUT_DIR) envConfig.outputDir = process.env.PW_CLI_OUTPUT_DIR;
   if (process.env.STORAGE_STATE) envConfig.storageState = process.env.STORAGE_STATE;
+  if (process.env.BASIC_AUTH_USER) envConfig.basicAuthUser = process.env.BASIC_AUTH_USER;
+  if (process.env.BASIC_AUTH_PASS) envConfig.basicAuthPass = process.env.BASIC_AUTH_PASS;
 
   return { ...DEFAULT_CONFIG, ...fileConfig, ...envConfig };
+}
+
+/**
+ * Returns Playwright `httpCredentials` for the configured Basic Auth gate,
+ * or undefined when no credentials are set.
+ */
+export function httpCredentialsFor(config?: Config): { username: string; password: string } | undefined {
+  if (config?.basicAuthUser && config?.basicAuthPass) {
+    return { username: config.basicAuthUser, password: config.basicAuthPass };
+  }
+  return undefined;
 }
 
 export function resolveConfig(cliFlags: Partial<Config>, configPath?: string): Config {
@@ -68,6 +88,8 @@ export function resolveConfig(cliFlags: Partial<Config>, configPath?: string): C
   if (cliFlags.snapshotDepth !== undefined) merged.snapshotDepth = cliFlags.snapshotDepth;
   if (cliFlags.maxRetries !== undefined) merged.maxRetries = cliFlags.maxRetries;
   if (cliFlags.storageState !== undefined) merged.storageState = cliFlags.storageState;
+  if (cliFlags.basicAuthUser !== undefined) merged.basicAuthUser = cliFlags.basicAuthUser;
+  if (cliFlags.basicAuthPass !== undefined) merged.basicAuthPass = cliFlags.basicAuthPass;
 
   return merged;
 }

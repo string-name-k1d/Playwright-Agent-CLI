@@ -80,23 +80,44 @@ export class PlaywrightSession {
     return this.page;
   }
 
-  async launch(url: string, opts: { profile?: string; snapshotDepth?: number; headless?: boolean } = {}): Promise<void> {
-    const contextOptions: BrowserContextOptions = {};
+  async launch(
+    url: string,
+    opts: {
+      profile?: string;
+      snapshotDepth?: number;
+      headless?: boolean;
+      httpCredentials?: { username: string; password: string };
+      ignoreHTTPSErrors?: boolean;
+    } = {},
+  ): Promise<void> {
+    const contextOptions: BrowserContextOptions = {
+      // Private/test sites (UAT, internal hosts) often use self-signed or
+      // expired TLS certs — ignore HTTPS errors by default.
+      ignoreHTTPSErrors: opts.ignoreHTTPSErrors ?? true,
+    };
     const headless = opts.headless ?? false;
+
+    if (opts.httpCredentials) {
+      contextOptions.httpCredentials = opts.httpCredentials;
+    }
 
     const launchArgs: string[] = [];
 
     if (opts.profile) {
       const dirExists = existsSync(opts.profile);
       if (!dirExists) mkdirSync(opts.profile, { recursive: true });
-      // Clear stale Chrome lock files from previous runs
+      // Clear stale Chrome lock files from previous runs. Use rmSync directly
+      // (no existsSync guard): a broken SingletonLock symlink points at a dead
+      // pid/hostname from an older container, existsSync() reports it as gone,
+      // but Chromium still refuses to launch ("profile appears to be in use").
       try {
-        const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
-        for (const f of lockFiles) {
-          const p = join(opts.profile, f);
-          if (existsSync(p)) rmSync(p, { force: true });
+        for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+          rmSync(join(opts.profile, f), { force: true });
         }
       } catch {}
+      // Disable Chromium's single-instance handoff so a stale SingletonLock from a
+      // killed/crashed browser never makes launch fail with "profile is in use".
+      launchArgs.push('--no-singleton');
       this.context = await (chromium as any).launchPersistentContext(opts.profile, {
         headless,
         args: launchArgs,
@@ -217,6 +238,61 @@ export class PlaywrightSession {
     } catch {}
   }
 
+  /**
+   * Interactively expands reveal-style controls so the components hidden behind
+   * them become visible to the accessibility snapshot. Covers:
+   *   - Drupal paragraphs "List additional actions" action buttons
+   *   - "Toggle Actions" paragraphs dropdown toggles
+   *   - Drupal dropbutton secondary actions ("Add <Block>" options)
+   *   - closed ARIA tabs (e.g. jQuery UI "Advanced Options" tablists)
+   *   - collapsed <details> regions
+   * Multi-pass: each expansion can trigger an AJAX re-render that resets sibling
+   * reveals, so keep clicking until a pass makes no new clicks (max 5 passes).
+   */
+  async expandReveals(): Promise<void> {
+    if (!this.page) throw new Error('Session not started.');
+    for (let pass = 0; pass < 5; pass++) {
+      const clicked = await this.page.evaluate(() => {
+        let n = 0;
+        const clickIfNotOpen = (el: HTMLElement, alreadyOpen: boolean): void => {
+          if (!alreadyOpen) {
+            try {
+              el.click();
+              n++;
+            } catch {}
+          }
+        };
+        // 1. "List additional actions" reveal buttons (paragraphs actions).
+        Array.from(document.querySelectorAll<HTMLElement>('button')).forEach((b) => {
+          const label = b.getAttribute('aria-label') ?? b.textContent ?? '';
+          if (/list additional actions/i.test(label)) {
+            clickIfNotOpen(b, !!b.closest('.paragraphs-dropdown.open'));
+          }
+        });
+        // 2. "Toggle Actions" dropdown toggles.
+        document.querySelectorAll<HTMLElement>('.paragraphs-dropdown-toggle button').forEach((b) => {
+          clickIfNotOpen(b, !!b.closest('.paragraphs-dropdown.open'));
+        });
+        // 3. Drupal dropbutton secondary actions.
+        document.querySelectorAll<HTMLElement>('.dropbutton-wrapper:not(.open) .dropbutton-toggle button').forEach((b) => {
+          clickIfNotOpen(b, false);
+        });
+        // 4. Closed ARIA tabs (jQuery UI "Advanced Options" tablists).
+        document.querySelectorAll<HTMLElement>('[role="tab"][aria-selected="false"]').forEach((t) => {
+          clickIfNotOpen(t, false);
+        });
+        // 5. Collapsed collapsible regions.
+        document.querySelectorAll<HTMLDetailsElement>('details:not([open]) > summary').forEach((s) => {
+          clickIfNotOpen(s, false);
+        });
+        return n;
+      });
+      if (clicked === 0) break;
+      await this.page.waitForTimeout(700);
+      await this.page.waitForLoadState('networkidle').catch(() => {});
+    }
+  }
+
   async screenshot(filename?: string): Promise<string> {
     if (!this.page) throw new Error('Session not started.');
     const path = filename ?? `screenshot-${Date.now()}.png`;
@@ -228,19 +304,10 @@ export class PlaywrightSession {
     if (!this.page) throw new Error('Session not started.');
     if (this.page.isClosed()) return '';
 
-    // Expand Drupal dropbutton secondary actions so hidden block types appear in the AX tree.
-    // Two passes: first pass expands all toggles; some may trigger Paragraphs AJAX re-renders
-    // that reset sibling dropbuttons to closed. Second pass catches those re-rendered ones.
-    await this.page.evaluate(() => {
-      document.querySelectorAll<HTMLElement>('.dropbutton-toggle button').forEach(btn => btn.click());
-    });
-    await this.page.waitForTimeout(1000);
-    await this.page.waitForLoadState('networkidle').catch(() => {});
-    await this.page.waitForTimeout(500);
-    await this.page.evaluate(() => {
-      document.querySelectorAll<HTMLElement>('.dropbutton-wrapper:not(.open) .dropbutton-toggle button').forEach(btn => btn.click());
-    });
-    await this.page.waitForTimeout(300);
+    // Interactively expand reveal-style controls ("List additional actions",
+    // "Toggle Actions", dropbuttons, closed tabs, <details>) so the components
+    // hidden behind them appear in the AX tree.
+    await this.expandReveals();
 
     const cdp = await (this.page.context() as any).newCDPSession(this.page);
     const result: { nodes: CdpAxNode[] } = await cdp.send('Accessibility.getFullAXTree');

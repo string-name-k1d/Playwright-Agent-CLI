@@ -8,7 +8,7 @@ import { registerExploreEntry, type ExploreEntry } from '../lib/explore-registry
 import { saveSiteProfile } from '../lib/site-profile.js';
 import { updateWebsiteProfile, loadWebsiteProfile, resolveElement } from '../lib/website-profile.js';
 import { parseSnapshotElements } from '../lib/snapshot-parser.js';
-import { Config, resolveProfile } from '../config.js';
+import { Config, resolveProfile, httpCredentialsFor } from '../config.js';
 
 export interface GuideOptions {
   url?: string;
@@ -187,7 +187,7 @@ export async function guideCommand(opts: GuideOptions): Promise<void> {
   console.log(chalk.cyan('Launching browser...'));
   const session = new PlaywrightSession();
   try {
-    await session.launch(url, { profile });
+    await session.launch(url, { profile, httpCredentials: httpCredentialsFor(opts.config) });
   } catch (err: any) {
     console.error(chalk.red(`Failed to launch browser: ${err.message}`));
     process.exit(1);

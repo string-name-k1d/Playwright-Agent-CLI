@@ -4,7 +4,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureArtifactsDir } from '../lib/artifacts.js';
 import { ensurePlaywrightConfig } from './test.js';
-import { Config, resolveProfile } from '../config.js';
+import { Config, resolveProfile, httpCredentialsFor } from '../config.js';
 
 export interface UiOptions {
   execute?: string;
@@ -44,7 +44,7 @@ export async function uiCommand(opts: UiOptions): Promise<number> {
     return 1;
   }
 
-  ensurePlaywrightConfig(opts.url ?? opts.config.targetUrl, profile ?? opts.config.storageState);
+  ensurePlaywrightConfig(opts.url ?? opts.config.targetUrl, profile ?? opts.config.storageState, httpCredentialsFor(opts.config));
 
   console.log(chalk.bold('\n═══════════════════════════════════════════'));
   console.log(chalk.bold('  Playwright UI mode'));

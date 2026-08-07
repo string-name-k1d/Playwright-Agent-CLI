@@ -3,9 +3,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { URL } from 'node:url';
 import { join } from 'node:path';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { chromium } from 'playwright';
-import { Config } from '../config.js';
+import { Config, httpCredentialsFor } from '../config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -87,12 +87,23 @@ export async function loginCommand(opts: LoginOptions): Promise<void> {
 
   // Use Playwright API directly — same approach as auto_playwright
   console.log(chalk.cyan('\nLaunching browser and authenticating...'));
+  const creds = httpCredentialsFor(opts.config);
   let context;
   try {
+    // Clear stale Chrome lock files and disable the singleton handoff so a
+    // previously killed/crashed browser never blocks this launch. rmSync
+    // directly (no existsSync guard) so broken SingletonLock symlinks from
+    // older containers are removed too.
+    try {
+      for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+        rmSync(join(absProfile, f), { force: true });
+      }
+    } catch {}
     context = await chromium.launchPersistentContext(absProfile, {
       headless: !opts.headed,
-      args: ['--no-sandbox', '--disable-gpu'],
+      args: ['--no-sandbox', '--disable-gpu', '--no-singleton'],
       ignoreHTTPSErrors: true,
+      ...(creds ? { httpCredentials: creds } : {}),
     });
 
     const page = context.pages()[0] || await context.newPage();

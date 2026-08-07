@@ -9,6 +9,7 @@ A TypeScript CLI tool implementing an explore > plan > test > report workflow fo
 - [Commands](#commands)
   - [check](#check)
   - [login](#login)
+  - [import-session](#import-session)
   - [explore](#explore)
 - [guide](#guided-browsing-session)
   - [plan](#plan)
@@ -73,6 +74,14 @@ docker-compose exec agent node dist/index.js repl
 
 All commands fall back to `TARGET_URL` from `.env` when `--url` is not passed. All browser commands (`check`, `explore`, `autorun`, `heal`) auto-detect the `./auth-profile` directory created by `login` — no need to pass `--profile` explicitly if you used the default path.
 
+**Argument validation:** every command validates its arguments immediately on startup, before doing any work:
+- File/directory arguments (`--cookies`, `--snapshot`, `--prompt-file`, `--plan`, `--reference`, `--execute`, `--codegen <file>`, ...) must exist — otherwise the command fails fast with `Error: <flag> not found: <path>`.
+- `--url`/`--uli` must be valid `http(s)` URLs.
+- Numeric options (`--depth`, `--retries`, `--workers`, `--max-iterations`, `--keep-autorun`, `--keep-runs`, `--ui-port`) must be non-negative integers.
+- `--resume <runId>` must point to an existing `artifacts/results/autorun-<runId>` directory.
+- The global `--config <path>` must point to an existing file.
+- Glob patterns (e.g. `tests/*.spec.ts`) are accepted for `--execute` without an existence check.
+
 ### `check`
 
 Verify environment and connectivity.
@@ -87,10 +96,12 @@ Checks:
 - `opencode --version` is available
 - Target site loads and responds to snapshot
 
-If `./auth-profile` exists (created by `login`), it is automatically used for authenticated pages.
+The site check uses the same in-process Chromium session as the other browser commands, so HTTP Basic Auth (`BASIC_AUTH_USER` / `BASIC_AUTH_PASS` from `.env`) and the saved `./auth-profile` session are honored automatically. The default target is the site homepage (safe, non-destructive) — pass `--url` to check a specific page.
+
+If `./auth-profile` exists (created by `login` or `import-session`), it is automatically used for authenticated pages. When the loaded page turns out to be a login/SSO page (e.g. `login.microsoftonline.com`, `shib.ust.hk`), `check` prints a warning that the profile is not authenticated for the site.
 
 **Options:**
-- `--url <url>` — also verify site connectivity (falls back to `TARGET_URL`)
+- `--url <url>` — also verify site connectivity (falls back to `TARGET_URL`; default is the site homepage)
 - `--screenshot` — capture a screenshot of the reached site
 - `--profile <path>` — explicit browser profile path (overrides auto-detection)
 
@@ -152,6 +163,45 @@ Or in `.env`:
 STORAGE_STATE=./auth-profile
 ```
 
+### `import-session`
+
+Reuse a login you already have in your **host browser** (e.g. a site behind HKUST CAS/Shibboleth SSO) without logging in again in the container. Exports the session cookies from the host browser and injects them into the container's `auth-profile`, which all other commands auto-detect.
+
+```bash
+# Import cookies exported from the host browser (Cookie-Editor JSON array,
+# or a Playwright storageState file with a "cookies" array)
+pw-cli-agent import-session --cookies ./shared/callitso-cookies.json
+
+# Alternative: headed interactive capture — log in via noVNC (http://localhost:6080/vnc.html),
+# the session is saved once an authenticated page is detected
+pw-cli-agent import-session --capture --url https://callitso.docker-uat01.ust.hk
+
+# Verify the imported session
+pw-cli-agent check --url https://callitso.docker-uat01.ust.hk
+```
+
+**Options:**
+- `--cookies <file>` — JSON cookies file (Cookie-Editor export or Playwright storageState)
+- `--capture` — headed capture instead of file import (log in via noVNC)
+- `--url <url>` — target URL to verify the session against (falls back to `TARGET_URL`)
+- `--headed` — show browser window
+- `--profile <path>` — profile directory to save (default: `./auth-profile`)
+
+The command injects the cookies into the Chromium profile, navigates to the target, detects whether a Drupal `SESS*` session cookie is present, and writes `auth-profile/state.json` for the test runner. Export cookies for both the app host (e.g. `callitso.docker-uat01.ust.hk`) and the SSO IdP host (e.g. `shib.ust.hk`) for full sessions.
+
+> **Profile locks:** browsers launch with `--no-singleton` and stale Chrome `SingletonLock`/`SingletonSocket`/`SingletonCookie` files are removed before launch, so a previous crashed/killed run can never make the next run fail with "browser profile is in use". Failed/aborted commands always close their browser so no Chromium process leaks to hold the lock.
+
+### HTTP Basic Auth
+
+Sites behind an nginx auth gate (`WWW-Authenticate: Basic` — e.g. UAT hosts that return `401` to everything) are supported via Playwright `httpCredentials`. Configure the credentials in `.env` and every browser flow (`check`, `explore`, `guide`, `login`, `import-session`, `autorun`, `test`, `ui`) passes them automatically:
+
+```
+BASIC_AUTH_USER=helper
+BASIC_AUTH_PASS=secret
+```
+
+Or in `pw-cli-agent.config.json`: `"basicAuthUser"` / `"basicAuthPass"`.
+
 ### `explore`
 
 Open a browser, navigate to a URL, capture a snapshot and optional screenshot. Each explore result is registered in the **explore registry** — a searchable index of all snapshots with element metadata (links, headings, buttons, inputs). After each run, the **site profile**, the **per-site website profile** (`website-profiles/<host>/site_index.json` + `specs/`), and the **site map** (the same two-tier index + per-route spec files) are automatically regenerated.
@@ -177,6 +227,8 @@ pw-cli-agent explore --guide --url https://example.com --repl
 - `--profile <path>` — explicit browser profile path (overrides auto-detection)
 
 Artifacts saved to `./artifacts/explore/`. Registry stored at `./artifacts/explore-registry.json`. Site profile saved to `./artifacts/site-profile.md`.
+
+> **Unauthenticated redirect guard:** if the browser lands on a login/SSO page (e.g. `login.microsoftonline.com`, `shib.ust.hk`, `/user/login`) instead of the requested page, `explore` **aborts without snapshotting** — otherwise the plan → generate pipeline would emit tests for elements that only exist on the login page. Authenticate first with `import-session --capture` (see above).
 
 ### Guided Browsing Session
 
@@ -270,6 +322,10 @@ pw-cli-agent plan --url https://example.com --prompt "Test the login flow and fo
 # Requirements from a markdown file
 pw-cli-agent plan --url https://example.com --prompt-file ./requirements.md
 
+# UAT: recorded test cases for the "Add Custom Page (MTPC)" form
+pw-cli-agent plan --prompt-file ./prompts/prompts-uat-add-custom-mtpc-page.md \
+  --url https://callitso.docker-uat01.ust.hk/node/add/custom_page/mtpc
+
 # Search explore registry for matching records
 pw-cli-agent plan --search "login"
 
@@ -351,6 +407,13 @@ pw-cli-agent generate --codegen --url https://example.com
 - `--url <url>` — target URL (for opencode context)
 - `--profile <path>` — browser profile for auth state (auto-detects `./auth-profile`); codegen loads it via `--load-storage`
 - `--reference <path>` — user test procedures/screenshots directory or file
+- `--batch-size <N>` — test cases generated per opencode call (default `5`; `1` = single request for the whole plan)
+
+**Batched generation:** Plans with many test cases (e.g. 50 `TC-*` cases) are split into batches of `--batch-size` test cases, and each batch is generated in its own opencode request. Each request stays small and focused, which cuts token usage per call, keeps responses fast, and avoids the model drifting agentic on an oversized prompt. Batches are written to separate files (`generated-<ts>-batch-<N>.spec.ts`) under `./artifacts/tests/`; a batch that fails to produce code is skipped and reported, and the remaining batches are still saved. When `--batch-size 1` is given the whole plan is sent as one request (legacy behavior). Each batch runs with a 10-minute timeout and is attempted up to 3 times (retries inject a "skip deliberation, output code only" nudge). Note that reasoning models (e.g. the `big-pickle` default) count internal reasoning against their output-token budget and occasionally emit no code at all — retries recover from that, but keep batches small (`5` or fewer) when the plan test cases are detailed, and prefer prompting from the plan alone over inlining large codegen-reference scripts that the model has to reconcile.
+
+**Generation agent:** opencode runs in `--format json` mode against the project's non-agentic `codegen` agent (`.opencode/agent/codegen.md`), which is told to answer directly with only the requested code and never to use tools — this prevents the default `build` agent from going agentic (running Grep/read tools, asking clarifying questions) and timing out. Override with `OPENCODE_AGENT=<name>` (e.g. `OPENCODE_AGENT=build`).
+
+**Built-in site-form guidance:** The generator prompt ships with a Drupal/Composer form-mechanics section so generated tests handle this site's patterns correctly out of the box — hidden add buttons behind "List additional actions" reveals (absent from the DOM until clicked), jQuery-UI "Advanced Options" tabs whose fields only exist once opened (re-query tabs after each click, wait on `aria-selected`), `.paragraph-type-label` as the reliable "was added" signal, `getByRole()` substring-matching pitfalls (e.g. "Add Slide" also matches "Add Slideshow Block"), numeric `<select>` values asserted via `option:checked`, unvalidated blank fields, and `test.setTimeout(120000)` / `test.describe.configure({ timeout: 120000 })` for multi-step flows on slow hosts.
 
 **Codegen mode:**
 - Opens the Playwright Inspector on the container's Xvfb display. View and drive it from your host browser via noVNC at `http://localhost:6080/vnc.html` (native VNC client: `localhost:5900`).
@@ -463,6 +526,9 @@ pw-cli-agent autorun --url https://example.com --codegen
 # Reuse an existing codegen/exploration script as reference material
 pw-cli-agent autorun --url https://example.com --codegen ./artifacts/tests/codegen-abc123.spec.ts
 
+# Generate tests in batches of 5 test cases per opencode call
+pw-cli-agent autorun --url https://example.com --batch-size 5
+
 # Resume an interrupted run
 pw-cli-agent autorun --resume abc1234
 ```
@@ -487,6 +553,7 @@ The loop repeats steps 4–7 until all tests pass or max iterations reached.
 - `--resume <runId>` — resume a previous interrupted run
 - `--profile <path>` — browser profile for auth state (auto-detects `./auth-profile`)
 - `--codegen [file]` — record a one-time codegen flow before planning, or pass an existing codegen/exploration file (e.g. `--codegen ./artifacts/tests/codegen-abc123.spec.ts`) to use as reference material instead
+- `--batch-size <N>` — test cases generated per opencode call during the generate step (default `5`; `1` = single request). See [generate](#generate) for details.
 
 State saved to `./artifacts/results/autorun-<runId>/state.json`.
 
@@ -575,15 +642,16 @@ Pruning is opt-in; a bare `pw-cli-agent clean` only touches scratch/temp files. 
 |---------|-------------|-------------|
 | `check` | Verify environment and connectivity | `--url`, `--screenshot`, `--profile` |
 | `login` | Log in via Drush ULI, save browser profile | `--url`, `--user`, `--uli`, `--drush-cmd`, `--profile` |
+| `import-session` | Reuse a host-browser login: import exported cookies or capture via noVNC | `--cookies`, `--capture`, `--url`, `--profile` |
 | `explore` | Open browser, navigate, capture snapshot (registers in explore registry + per-site profile) | `--url`, `--depth`, `--screenshot`, `--headed`, `--guide`, `--repl`, `--profile` |
 | `profile` | Inspect per-site profiles: element trees, registry queries, refs, pages, site map | `tree <url>`, `query <q> [url]`, `ref <eN> [url]`, `pages [url]`, `ls`, `map [url]` |
 | `plan` | Generate test plan from snapshot via opencode (queries/explores registry) | `--url`, `--snapshot`, `--prompt`, `--prompt-file`, `--model`, `--search`, `--explore`, `--reference` |
-| `generate` | Generate test files from plans (extract / opencode / interactive codegen with `[eN]` ref annotation) | `--plan`, `--extract`, `--codegen`, `--url`, `--profile`, `--reference` |
+| `generate` | Generate test files from plans (extract / opencode / interactive codegen with `[eN]` ref annotation; batched generation) | `--plan`, `--extract`, `--codegen`, `--url`, `--profile`, `--reference`, `--batch-size` |
 | `test` | Execute Playwright test files | `--execute`, `--headed`, `--retries`, `--workers`, `--profile` |
 | `ui` | Run the interactive Playwright UI test runner (headed, panel served on `8123`) | `--execute`, `--url`, `--profile`, `--ui-host`, `--ui-port` |
 | `report` | Aggregate artifacts into summary report | `--format`, `--output` |
 | `skill` | Generate opencode skill files | `--output-dir`, `--agents` |
-| `autorun` | Loop: explore → [codegen] → plan → generate → test → heal → generate (dependency-ordered parallel tests; planner uses site map + codegen reference) | `--url`, `--headed`, `--prompt`, `--max-iterations`, `--resume`, `--profile`, `--codegen [file]` |
+| `autorun` | Loop: explore → [codegen] → plan → generate → test → heal → generate (dependency-ordered parallel tests; planner uses site map + codegen reference) | `--url`, `--headed`, `--prompt`, `--max-iterations`, `--resume`, `--profile`, `--codegen [file]`, `--batch-size` |
 | `heal` | Re-explore failures (element-not-found aware), generate corrected plan (preserves passing tests) | `--url`, `--model`, `--headed`, `--profile` |
 | `repl` | Start interactive REPL session | — |
 | `clean` | Remove scratch/temp files, prune old autorun/run result dirs | `--dry-run`, `--autorun`, `--runs`, `--keep-autorun`, `--keep-runs`, `--all` |
@@ -865,6 +933,7 @@ pw-cli-agent
 ├── CLI Layer (Commander.js subcommands)
 │   ├── check    — verify environment + target site
 │   ├── login    — Playwright API: launchPersistentContext → ULI → storageState JSON
+│   ├── import-session — reuse host-browser login (cookie import / noVNC capture) → storageState JSON
 │   ├── explore  — PlaywrightSession: navigate, accessibility snapshot → registry + site profile
 │   ├── guide    — PlaywrightSession: interactive codegen (default) or REPL session
 │   ├── profile  — per-site element trees, registry queries, refs, pages, site map
@@ -913,6 +982,7 @@ agent/
     ├── commands/
     │   ├── check.ts                  # Environment verification
     │   ├── login.ts                  # Playwright API: ULI auth + storageState JSON export
+    │   ├── import-session.ts         # Reuse host-browser login: cookie import / noVNC capture
     │   ├── explore.ts                # Browser exploration via in-process PlaywrightSession + snapshots + registry
     │   ├── guide.ts                  # Interactive guided browsing session (headed, records observations)
     │   ├── profile.ts                # Per-site profiles: element trees, registry queries, refs, site map
@@ -952,7 +1022,9 @@ Create `pw-cli-agent.config.json` in your project root or `~/.config/pw-cli-agen
   "outputDir": "./artifacts",
   "headed": false,
   "snapshotDepth": 4,
-  "maxRetries": 3
+  "maxRetries": 3,
+  "basicAuthUser": "helper",
+  "basicAuthPass": "secret"
 }
 ```
 
@@ -962,12 +1034,14 @@ Priority: CLI flags > env vars > config file > defaults.
 
 | Variable | Description |
 |----------|-------------|
-| `TARGET_URL` | Default target URL |
+| `TARGET_URL` | Default target URL (`.env` sets the site homepage — a safe, non-destructive default for `check`; use `--url` to target a specific page like `/node/add/custom_page/mtpc`) |
 | `OPENCODE_MODEL` | Default opencode model |
 | `OPENCODE_SERVER_URL` | Remote opencode server endpoint (leave empty for local CLI mode; remote server mode is currently broken in opencode 1.18.x) |
 | `PW_CLI_HEADED` | Run browsers headed by default |
 | `PW_CLI_OUTPUT_DIR` | Custom artifacts directory |
 | `STORAGE_STATE` | Default browser profile path for saved login state |
+| `BASIC_AUTH_USER` | HTTP Basic Auth username for sites behind an nginx auth gate |
+| `BASIC_AUTH_PASS` | HTTP Basic Auth password for sites behind an nginx auth gate |
 
 ## Docker
 

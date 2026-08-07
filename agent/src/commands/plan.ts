@@ -37,6 +37,27 @@ function extractExploreUrls(planContent: string): string[] {
   return urls;
 }
 
+/** Extracts `[explore-expanded: <url>]` markers — pages that need an interactive
+ *  re-exploration (droplists/tabs clicked) to capture hidden components. */
+function extractExpandedExploreUrls(planContent: string): string[] {
+  const urls: string[] = [];
+  const pattern = /\[explore-expanded:\s*(.+?)\]/g;
+  let m;
+  while ((m = pattern.exec(planContent)) !== null) {
+    const raw = m[1].trim();
+    const clean = raw.replace(/[,\]\s\])]+$/, '');
+    if (clean && !urls.includes(clean)) urls.push(clean);
+  }
+  return urls;
+}
+
+/** True when a plan leans on components hidden behind droplists/reveals/tabs —
+ *  e.g. "List additional actions", "Toggle Actions", "Advanced Options",
+ *  dropbuttons — which are absent from the DOM until the control is opened. */
+function hasRevealKeyElements(planContent: string): boolean {
+  return /droplist|additional actions|toggle actions|advanced options|hidden\s+(?:button|option|menu|control|action)|dropbutton/i.test(planContent);
+}
+
 function resolveUrl(raw: string, baseUrl?: string): string {
   if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
   if (raw.startsWith('/') && baseUrl) {
@@ -240,6 +261,7 @@ export async function planCommand(opts: PlanOptions): Promise<void> {
   const baseUrl = opts.url ?? opts.config.targetUrl;
   let plan = '';
   const allSnapshots: string[] = [snapshotContent, ...additionalSnapshots];
+  const expandedExplored = new Set<string>();
 
   for (let depth = 0; depth <= MAX_EXPLORE_DEPTH; depth++) {
     if (depth > 0) {
@@ -253,23 +275,39 @@ export async function planCommand(opts: PlanOptions): Promise<void> {
       process.exit(1);
     }
 
-    const exploreUrls = extractExploreUrls(plan);
-    if (exploreUrls.length === 0) {
+    // Collect exploration requests. Plain [explore: URL] requests a normal
+    // snapshot; [explore-expanded: URL] (or a plan that leans on components
+    // hidden behind droplists/reveals/tabs) requests an interactive expanded
+    // exploration of that page so hidden components are captured too.
+    const expandedUrls = extractExpandedExploreUrls(plan);
+    if (hasRevealKeyElements(plan) && baseUrl && !expandedExplored.has(baseUrl)) {
+      expandedUrls.push(baseUrl);
+    }
+    const requests = new Map<string, boolean>(); // url -> expanded
+    for (const raw of extractExploreUrls(plan)) requests.set(resolveUrl(raw, baseUrl), false);
+    for (const raw of expandedUrls) requests.set(resolveUrl(raw, baseUrl), true);
+    for (const url of [...requests.keys()]) {
+      if (requests.get(url) && expandedExplored.has(url)) requests.delete(url);
+    }
+
+    if (requests.size === 0) {
       console.log(chalk.gray('  No further exploration requested by planner'));
       break;
     }
 
     if (depth >= MAX_EXPLORE_DEPTH) {
-      console.log(chalk.yellow(`  Max explore depth (${MAX_EXPLORE_DEPTH}) reached, skipping ${exploreUrls.length} pending URL(s)`));
+      console.log(chalk.yellow(`  Max explore depth (${MAX_EXPLORE_DEPTH}) reached, skipping ${requests.size} pending page(s)`));
       break;
     }
 
-    console.log(chalk.cyan(`\nPlanner requested ${exploreUrls.length} page(s) to explore:\n`));
+    const expandedCount = [...requests.values()].filter(Boolean).length;
+    console.log(chalk.cyan(`\nPlanner requested ${requests.size} page(s) to explore (${expandedCount} expanded):\n`));
     let explored = false;
-    for (const raw of exploreUrls) {
-      const resolved = resolveUrl(raw, baseUrl);
+    for (const [resolved, expanded] of requests) {
       const existing = getLatestEntryForUrl(resolved, opts.config.outputDir);
-      if (existing) {
+      // An expanded re-exploration is only useful if run live against the page
+      // (the cached snapshot predates the interaction), so never reuse it.
+      if (existing && !expanded) {
         const content = getSnapshotContent(existing);
         if (!allSnapshots.includes(content)) {
           allSnapshots.push(content);
@@ -280,12 +318,13 @@ export async function planCommand(opts: PlanOptions): Promise<void> {
         }
         continue;
       }
-      console.log(chalk.gray(`  Exploring: ${resolved}`));
+      console.log(chalk.gray(`  ${expanded ? 'Expanded explore (droplists/tabs): ' : 'Exploring: '}${resolved}`));
       try {
-        const result = await exploreCommand({ url: resolved, config: opts.config });
+        const result = await exploreCommand({ url: resolved, config: opts.config, expanded });
         const content = getSnapshotContent(result.entry);
         allSnapshots.push(content);
         explored = true;
+        if (expanded) expandedExplored.add(resolved);
       } catch (err: any) {
         console.log(chalk.yellow(`  Failed: ${err.message}`));
       }

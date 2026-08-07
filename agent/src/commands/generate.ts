@@ -4,13 +4,22 @@ import { join, basename } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { opencodeRun, extractStructuredOutput } from '../lib/opencode.js';
-import { saveTest, ensureArtifactsDir, readArtifact, extractCodeBlocks, saveExtractedTests, wrapInTest, getLatestFile } from '../lib/artifacts.js';
+import { saveTest, ensureArtifactsDir, readArtifact, extractCodeBlocks, saveExtractedTests, wrapInTest, getLatestFile, splitPlanTestSections } from '../lib/artifacts.js';
 import { generatorPrompt } from '../lib/prompt-templates.js';
 import { loadReferences, formatReferencesForPrompt } from '../lib/reference-loader.js';
 import { annotateCodegenSpec } from '../lib/codegen-annotator.js';
 import { Config, resolveProfile } from '../config.js';
 
 const execFileAsync = promisify(execFile);
+
+/** Default number of test cases to generate per opencode call. */
+export const DEFAULT_BATCH_SIZE = 5;
+
+/** Max attempts per batch; reasoning models occasionally spend the whole output budget on deliberation and emit no code, so retry with a "skip deliberation" nudge. */
+export const GENERATION_ATTEMPTS = 3;
+
+/** opencode agent used for generation (non-agentic, code-only output). */
+const GENERATOR_AGENT = process.env.OPENCODE_AGENT || 'codegen';
 
 export interface GenerateOptions {
   url?: string;
@@ -20,6 +29,7 @@ export interface GenerateOptions {
   headed?: boolean;
   profile?: string;
   reference?: string;
+  batchSize?: number;
   config: Config;
 }
 
@@ -32,8 +42,9 @@ export async function generateFromPlan(
   url: string | undefined,
   config: Config,
   referenceContent?: string,
-  codegenFile?: string
-): Promise<string> {
+  codegenFile?: string,
+  batchSize?: number
+): Promise<string[]> {
   console.log(chalk.cyan('Generating test code from plan...'));
 
   const context = url ? `Target URL: ${url}` : undefined;
@@ -47,12 +58,108 @@ export async function generateFromPlan(
     console.log(chalk.gray(`  Inlined ${codegen.count} codegen script(s) as reference material`));
   }
 
-  const prompt = generatorPrompt(planContent, context, finalReference);
-  const result = await opencodeRun(prompt, {
-    model: config.opencodeModel,
-    timeout: 300000,
-  });
+  const batch = batchSize ?? DEFAULT_BATCH_SIZE;
+  const stamp = Date.now();
 
+  // Split the plan into test-case sections. When there is more than one case
+  // and batching is enabled (or requested with a size), generate one file per
+  // batch. Each opencode request stays small: faster responses, fewer tokens,
+  // and far less chance of the model going agentic and timing out.
+  const { header, cases } = splitPlanTestSections(planContent);
+  const doBatch = cases.length > 1 && (batchSize === undefined || batchSize > 1);
+
+  const runBatch = async (ids: string[], label: string, scopeNote?: string): Promise<string> => {
+    const batchCases = cases.filter((c) => ids.includes(c.id));
+    const sections = batchCases.map((c) => `${c.heading}\n${c.body}`.trimEnd()).join('\n\n');
+    const subPlan = `${header}\n\n## Test Cases\n\n${sections}`;
+    let lastErr: Error | undefined;
+    for (let attempt = 1; attempt <= GENERATION_ATTEMPTS; attempt++) {
+      const note = `${scopeNote ?? ''}${
+        attempt > 1
+          ? '\n\nRETRY: Your previous attempt produced no code — all output tokens were spent on internal deliberation before the response was cut off. This time DO NOT deliberate. Immediately emit the complete Playwright test file: imports, storageState, one test() per test case, and the afterEach screenshot hook. No commentary, no explanations, no markdown fences, code only.'
+          : ''
+      }`;
+      const prompt = generatorPrompt(subPlan, context, finalReference, note.trim());
+      try {
+        const result = await opencodeRun(prompt, {
+          model: config.opencodeModel,
+          agent: resolveGeneratorAgent(),
+          timeout: 600000,
+          retries: 1,
+        });
+        const testCode = extractCodeFromResult(result);
+        const testPath = saveTest(wrapInTest(testCode, label), `${label}.spec.ts`, config.outputDir);
+        console.log(chalk.green(`  → ${testPath}`));
+        return testPath;
+      } catch (err) {
+        lastErr = err as Error;
+        if (attempt < GENERATION_ATTEMPTS) {
+          console.error(chalk.yellow(`  Batch attempt ${attempt}/${GENERATION_ATTEMPTS} produced no code; retrying...`));
+        }
+      }
+    }
+    throw lastErr ?? new Error('Generation failed');
+  };
+
+  if (!doBatch) {
+    const testPath = await runBatch(cases.map((c) => c.id), `generated-${stamp}`);
+    console.log(chalk.green(`Test generated: ${testPath}`));
+    return [testPath];
+  }
+
+  const batches: string[][] = [];
+  for (let i = 0; i < cases.length; i += batch) {
+    batches.push(cases.slice(i, i + batch).map((c) => c.id));
+  }
+  console.log(chalk.gray(`  Plan has ${cases.length} test case(s); generating in ${batches.length} batch(es) of up to ${batch}`));
+
+  const allTestIds = cases.map((c) => c.id).join(', ');
+  const files: string[] = [];
+  const failures: string[] = [];
+
+  for (let b = 0; b < batches.length; b++) {
+    const ids = batches[b];
+    const label = `generated-${stamp}-batch-${b + 1}`;
+    const scopeNote =
+      `Generate test code for the ${ids.join(', ')} test case(s) listed below (batch ${b + 1}/${batches.length} of the full plan).\n` +
+      `The full plan contains these test cases: ${allTestIds}. Test cases NOT in this batch are generated in other files.\n` +
+      `For each test in this batch: start with page.goto() to load the form, then perform the steps, then assert the expected result.\n` +
+      `If a test in this batch depends on a test that lives in another batch, still keep the test self-contained: repeat the minimal setup (e.g. page.goto + add the needed section/block) inside this test so it can run independently.\n` +
+      `Output ONE file containing tests for EXACTLY these test cases and no others.`;
+    console.log(chalk.cyan(`\n  Batch ${b + 1}/${batches.length}: ${ids.join(', ')} (${cases.filter((c) => ids.includes(c.id)).reduce((n, c) => n + c.body.split('\n').length, 0)} lines)`));
+    try {
+      const testPath = await runBatch(ids, label, scopeNote);
+      files.push(testPath);
+    } catch (err) {
+      console.error(chalk.red(`  Batch ${b + 1} failed: ${(err as Error).message}`));
+      failures.push(ids.join(', '));
+    }
+  }
+
+  if (files.length === 0) {
+    throw new Error(`All ${batches.length} generation batch(es) failed`);
+  }
+  if (failures.length > 0) {
+    console.warn(chalk.yellow(`  Skipped failing batch(es): ${failures.join(' | ')}`));
+  }
+  console.log('');
+  console.log(chalk.green(`Generated ${files.length} test file(s):`));
+  for (const p of files) console.log(chalk.gray(`  ${p}`));
+  return files;
+}
+
+/** Resolves the generator agent, falling back to opencode's default when the project codegen agent is unavailable. */
+function resolveGeneratorAgent(): string | undefined {
+  const agents = [
+    join(process.cwd(), '.opencode', 'agent', `${GENERATOR_AGENT}.md`),
+    join(process.cwd(), '.opencode', 'agents', `${GENERATOR_AGENT}.md`),
+  ];
+  if (existsSync(agents[0]) || existsSync(agents[1])) return GENERATOR_AGENT;
+  return undefined;
+}
+
+/** Extracts the largest fenced code block (or raw code fallback) from an opencode result. */
+function extractCodeFromResult(result: { output: string; exitCode: number }): string {
   const output = extractStructuredOutput(result);
   const raw = typeof output === 'string' ? output : result.output;
 
@@ -290,12 +397,8 @@ export async function generateCommand(opts: GenerateOptions): Promise<GenerateRe
       console.log(chalk.yellow('No code blocks found in plan — falling back to opencode generation\n'));
     }
 
-    const testCode = await generateFromPlan(planContent, opts.url, opts.config, referenceContent);
-    const wrappedCode = wrapInTest(testCode, `generated-${Date.now()}`);
-    const testFilename = `generated-${Date.now()}.spec.ts`;
-    const testPath = saveTest(wrappedCode, testFilename, opts.config.outputDir);
-    console.log(chalk.green(`Test generated: ${testPath}`));
-    return { files: [testPath] };
+    const files = await generateFromPlan(planContent, opts.url, opts.config, referenceContent, undefined, opts.batchSize);
+    return { files };
   }
 
   console.error(chalk.red('Specify --plan <file> (with optional --extract) or --codegen'));

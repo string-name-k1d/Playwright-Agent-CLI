@@ -431,6 +431,57 @@ export function parsePlanTestCases(markdown: string): PlanTestCase[] {
   return cases;
 }
 
+export interface PlanTestSection {
+  id: string;
+  heading: string;
+  body: string;
+}
+
+/**
+ * Splits a plan markdown document into its header (everything before the
+ * first test case) and one section per test case. Test-case sections are
+ * delimited by `### TC-<n>` (or `### TC-<n>:`) headings and end at the next
+ * such heading. Non-TC headings inside the header stop case scanning.
+ */
+export function splitPlanTestSections(markdown: string): { header: string; cases: PlanTestSection[] } {
+  const lines = markdown.split('\n');
+  const cases: PlanTestSection[] = [];
+  let headerLines: string[] = [];
+  let current: { id: string; heading: string; body: string[] } | null = null;
+
+  const finalize = (): void => {
+    if (!current) return;
+    cases.push({ id: current.id, heading: current.heading, body: current.body.join('\n') });
+    current = null;
+  };
+
+  for (const line of lines) {
+    const heading = line.match(/^#{1,6}\s*TC-(\d+)\s*[:：]?\s*(.*)$/i);
+    if (heading) {
+      finalize();
+      current = {
+        id: `TC-${heading[1]}`,
+        heading: line,
+        body: [],
+      };
+      continue;
+    }
+    if (!current) {
+      headerLines.push(line);
+      continue;
+    }
+    if (/^#{1,6}\s+/.test(line) && !/^#{1,6}\s*TC-\d+/i.test(line)) {
+      finalize();
+      headerLines.push(line);
+      continue;
+    }
+    current.body.push(line);
+  }
+  finalize();
+
+  return { header: headerLines.join('\n').trim(), cases };
+}
+
 /**
  * Computes a topological "wave" level for each test case using its
  * dependencies. Level 0 = no dependencies; level N runs only after all

@@ -8,11 +8,11 @@ import { planCommand } from './plan.js';
 import { extractTestsFromPlan, generateFromPlan, launchCodegen, annotateCodegenOutput, resolveStorageState } from './generate.js';
 import { runPlaywrightTest, saveTestResult, cleanupRunDir, RUN_DIR } from './test.js';
 import { healCommand } from './heal.js';
-import { ensureArtifactsDir, getLatestFile, wrapInTest, parsePlanTestCases, computeDependencyLevels, extractCodeBlocks } from '../lib/artifacts.js';
+import { ensureArtifactsDir, getLatestFile, parsePlanTestCases, computeDependencyLevels, extractCodeBlocks } from '../lib/artifacts.js';
 import { hostFromUrl, profileFileFor } from '../lib/website-profile.js';
 import { siteMapFileFor, loadSiteMap } from '../lib/site-map.js';
 import { refreshWebsiteProfile } from '../lib/profile-refresh.js';
-import { Config, resolveProfile } from '../config.js';
+import { Config, resolveProfile, httpCredentialsFor } from '../config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,6 +31,7 @@ interface AutorunState {
   snapshotPath?: string;
   planPath?: string;
   testFiles: string[];
+  batchSize?: number;
   allPassed: boolean;
   exploredUrls: string[];
   startedAt: string;
@@ -112,7 +113,7 @@ async function doCodegen(url: string, config: Config, profile?: string): Promise
   return outputPath;
 }
 
-async function doGenerate(planPath: string, url: string | undefined, config: Config, codegenPath?: string): Promise<string[]> {
+async function doGenerate(planPath: string, url: string | undefined, config: Config, codegenPath?: string, batchSize?: number): Promise<string[]> {
   step('Generate');
   const planContent = readFileSync(planPath, 'utf-8');
 
@@ -121,13 +122,9 @@ async function doGenerate(planPath: string, url: string | undefined, config: Con
   // inlined as authoritative reference material for locators/interactions.
   if (codegenPath) {
     console.log(chalk.gray(`  Using existing codegen/exploration file as reference: ${codegenPath}`));
-    const testCode = await generateFromPlan(planContent, url, config, undefined, codegenPath);
-    const wrappedCode = wrapInTest(testCode, `generated-${Date.now()}`);
-    const testFilename = `generated-${Date.now()}.spec.ts`;
-    const { saveTest } = await import('../lib/artifacts.js');
-    const testPath = saveTest(wrappedCode, testFilename, config.outputDir);
-    substep(`Generated: ${testPath}`);
-    return [testPath];
+    const files = await generateFromPlan(planContent, url, config, undefined, codegenPath, batchSize);
+    substep(`Generated ${files.length} test file(s)`);
+    return files;
   }
 
   // Try extracting code blocks first
@@ -143,13 +140,9 @@ async function doGenerate(planPath: string, url: string | undefined, config: Con
 
   // Fallback to opencode generation
   console.log(chalk.yellow('No code blocks in plan — generating via opencode...'));
-  const testCode = await generateFromPlan(planContent, url, config);
-  const wrappedCode = wrapInTest(testCode, `generated-${Date.now()}`);
-  const testFilename = `generated-${Date.now()}.spec.ts`;
-  const { saveTest } = await import('../lib/artifacts.js');
-  const testPath = saveTest(wrappedCode, testFilename, config.outputDir);
-  substep(`Generated: ${testPath}`);
-  return [testPath];
+  const files = await generateFromPlan(planContent, url, config, undefined, undefined, batchSize);
+  substep(`Generated ${files.length} test file(s)`);
+  return files;
 }
 
 async function doTest(testFiles: string[], headed: boolean, config: Config, storageState?: string, planPath?: string): Promise<boolean> {
@@ -195,7 +188,7 @@ async function doTest(testFiles: string[], headed: boolean, config: Config, stor
   mkdirSync(RUN_DIR, { recursive: true });
 
   try {
-    const result = await runPlaywrightTest(testFiles, headed, undefined, storageState, undefined, undefined, fileLevels);
+    const result = await runPlaywrightTest(testFiles, headed, undefined, storageState, undefined, undefined, fileLevels, httpCredentialsFor(config));
     console.log(result.output);
 
     // Save combined result under each test file for compatibility
@@ -246,6 +239,7 @@ export interface AutorunOptions {
   resume?: string;
   profile?: string;
   codegen?: boolean | string;
+  batchSize?: number;
   config: Config;
 }
 
@@ -294,6 +288,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
       promptFile: opts.promptFile,
       profile: opts.profile,
       codegen: opts.codegen,
+      batchSize: opts.batchSize,
       testFiles: [],
       allPassed: false,
       exploredUrls: [],
@@ -305,6 +300,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
     console.log(chalk.gray(`  URL:    ${state.url}`));
     console.log(chalk.gray(`  Model:  ${opts.config.opencodeModel ?? 'default'}`));
     console.log(chalk.gray(`  Max iterations: ${state.maxIterations}`));
+    if (state.batchSize) console.log(chalk.gray(`  Generation batch size: ${state.batchSize}`));
     if (state.codegen) console.log(chalk.gray(`  Codegen: ${typeof state.codegen === 'string' ? `use existing file as reference: ${state.codegen}` : 'record a flow (ref-annotated) before planning'}`));
   }
 
@@ -405,7 +401,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
           console.error(chalk.red('No plan path — cannot generate'));
           break;
         }
-        state.testFiles = await doGenerate(state.planPath, state.url, config, state.codegenPath);
+        state.testFiles = await doGenerate(state.planPath, state.url, config, state.codegenPath, state.batchSize);
         if (state.testFiles.length === 0) {
           console.error(chalk.red('No test files produced — aborting'));
           break;

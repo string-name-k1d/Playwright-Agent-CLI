@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { opencodeRun, extractStructuredOutput } from '../lib/opencode.js';
 import { ensureArtifactsDir } from '../lib/artifacts.js';
 import { healerPrompt } from '../lib/prompt-templates.js';
-import { Config } from '../config.js';
+import { Config, httpCredentialsFor } from '../config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -109,11 +109,36 @@ function copyScreenshots(testResultsDir: string, destDir: string): void {
 export const RUN_DIR = join(process.cwd(), 'run');
 const PLAYWRIGHT_CONFIG = join(process.cwd(), 'playwright.config.ts');
 
-export function ensurePlaywrightConfig(targetUrl?: string, storageState?: string): void {
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Expands a simple `*`-glob (relative to cwd) into matching file paths. */
+export function expandGlob(pattern: string): string[] {
+  const parts = pattern.split('/');
+  const filePattern = parts.pop()!;
+  const dir = join(process.cwd(), ...parts);
+  if (!existsSync(dir)) return [];
+  const regex = new RegExp(`^${escapeRegExp(filePattern).replace(/\\\*/g, '.*')}$`);
+  return readdirSync(dir)
+    .filter((f) => regex.test(f))
+    .map((f) => join(dir, f))
+    .sort();
+}
+
+export function ensurePlaywrightConfig(
+  targetUrl?: string,
+  storageState?: string,
+  httpCredentials?: { username: string; password: string },
+): void {
   const useOptions: Record<string, unknown> = {
     actionTimeout: 10000,
     navigationTimeout: 30000,
   };
+
+  if (httpCredentials) {
+    useOptions.httpCredentials = httpCredentials;
+  }
 
   // Resolve targetUrl: explicit param → existing config → default
   const resolvedUrl = targetUrl || (() => {
@@ -156,11 +181,7 @@ export function ensurePlaywrightConfig(targetUrl?: string, storageState?: string
     '  use: {',
   ];
   for (const [key, value] of Object.entries(useOptions)) {
-    if (typeof value === 'string') {
-      lines.push(`    ${key}: ${JSON.stringify(value)},`);
-    } else {
-      lines.push(`    ${key}: ${value},`);
-    }
+    lines.push(`    ${key}: ${JSON.stringify(value)},`);
   }
   lines.push('  },');
   lines.push('  timeout: 30000,');
@@ -185,13 +206,19 @@ export async function runPlaywrightTest(
   retries?: number,
   workers?: number,
   fileLevels?: Map<string, number>,
+  httpCredentials?: { username: string; password: string },
 ): Promise<TestResult> {
   cleanupRunDir();
   mkdirSync(RUN_DIR, { recursive: true });
 
-  ensurePlaywrightConfig(targetUrl, storageState);
+  ensurePlaywrightConfig(targetUrl, storageState, httpCredentials);
 
-  const files = Array.isArray(file) ? file : [file];
+  const files = (Array.isArray(file) ? file : [file]).flatMap((f) =>
+    f.includes('*') ? expandGlob(f) : [f]
+  );
+  if (files.length === 0) {
+    throw new Error(`No test files matched: ${file}`);
+  }
 
   // When dependency levels are provided, run files in waves: files at the
   // same level run in parallel, but a wave starts only after every lower
@@ -261,7 +288,7 @@ export async function runPlaywrightTest(
 
   try {
     const { stdout, stderr } = await execFileAsync('npx', args, {
-      timeout: 120000,
+      timeout: 1200000,
       maxBuffer: 10 * 1024 * 1024,
       env: { ...process.env, PLAYWRIGHT_HTML_REPORT: join(RUN_DIR, 'playwright-report') },
     });
@@ -310,6 +337,8 @@ export async function testCommand(opts: TestOptions): Promise<TestResult> {
     opts.storageState,
     opts.retries,
     opts.workers,
+    undefined,
+    httpCredentialsFor(opts.config),
   );
   console.log(result.output);
 

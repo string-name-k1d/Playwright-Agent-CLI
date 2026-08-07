@@ -5,6 +5,7 @@ import { request as httpsRequest } from 'node:https';
 export interface OpenCodeOptions {
   model?: string;
   session?: string;
+  agent?: string;
   quiet?: boolean;
   timeout?: number;
   cwd?: string;
@@ -119,6 +120,7 @@ async function opencodeViaCli(
 
   baseArgs.push('--format', 'json');
   if (opts.model) baseArgs.push('-m', opts.model);
+  if (opts.agent) baseArgs.push('--agent', opts.agent);
 
   // Pass the prompt inline as the message. Inline prompts keep the model focused
   // on answering (no tool exploration), whereas --file attachment mode can make

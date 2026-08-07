@@ -19,6 +19,8 @@ Focus on:
 - Interactive elements (buttons, checkboxes, dropdowns)
 - Key user journeys (login, search, checkout, etc.)
 
+When the snapshot shows buttons like "List additional actions", "Toggle Actions", "Expand", or "Advanced Options", flag them explicitly: they hide further actions/fields that the flows may need to click first. Do not assume every add button is visible in the initial snapshot.
+
 SNAPSHOT:
 ${snapshotContent}
 
@@ -110,6 +112,8 @@ EXPLORATION ANNOTATIONS:
   - Form submission targets (after creating content, where does the user land?)
   - Admin pages needed for test setup (login, content admin, etc.)
   - A page.goto() target in any test case that does not already have a snapshot provided
+- If a test case's steps need components that are hidden behind droplists, reveal buttons, or collapsed tabs — e.g. "List additional actions", "Toggle Actions", "Advanced Options", dropbutton secondary actions like "Add <Block>" options — those components are NOT in the DOM (and NOT in the snapshot) until the control is opened. Request an INTERACTIVE re-exploration of that page so the system clicks the reveals and captures the hidden components:
+  - [explore-expanded: /node/add/page] — Re-explore this page by opening its droplists/tabs to capture hidden section/block add buttons and configuration fields
 
 DEPENDENCY RULES:
 - If a test requires another test to run first (e.g. CRUD operations: Create before Read/Update/Delete), add a [depends: test-name] label
@@ -152,17 +156,22 @@ Respond in markdown with a structured test plan. Use proper markdown headings an
  * @param planContent - The test plan content (markdown with test cases)
  * @param context - Additional context (e.g., target URL)
  * @param referenceContent - User-provided test procedures and screenshots (from --reference flag)
+ * @param scopeNote - Optional note describing which subset of the plan this
+ *   call must generate (e.g. "Generate ONLY test cases TC-1..TC-10 — batch 1/5
+ *   of the full plan"). Keeps each opencode request small so batches stay fast.
  * @returns Formatted prompt string for the AI generator
  */
 export function generatorPrompt(
   planContent: string,
   context?: string,
-  referenceContent?: string
+  referenceContent?: string,
+  scopeNote?: string
 ): string {
   const contextSection = context ? `\n\nADDITIONAL CONTEXT:\n${context}` : '';
   const referenceSection = referenceContent
     ? `\n\n${referenceContent}\n\nIMPORTANT: Use the user-provided test procedures above as the primary source for test steps, expected behavior, and assertions.`
     : '';
+  const scopeSection = scopeNote ? `\n\nSCOPE:\n${scopeNote}\n` : '';
 
   return `OUTPUT ONLY THE CODE. No explanations, no thinking, no markdown fences, no commentary. Just the raw TypeScript code starting with import.
 
@@ -196,6 +205,16 @@ SNAPSHOT ROLE → PLAYWRIGHT ROLE MAPPING (the snapshot uses Playwright accessib
 STRICT MODE RULES (when a locator matches multiple elements):
 - If a table has "Testing Page" as a link AND "Edit Testing Page" as another link, getByRole('link', { name: 'Testing Page' }) matches BOTH. Use getByRole('link', { name: 'Testing Page', exact: true }) or getByRole('link', { name: 'Testing Page' }).first()
 - For table rows: scope to the table first: page.getByRole('table').first().getByRole('row').nth(1)
+
+DRUPAL/COMPOSER FORM MECHANICS (apply when the plan targets a Drupal content-add/edit form with "sections" and "blocks"):
+- getByRole() name matching is SUBSTRING + case-insensitive by default. A button named "Add Slide" also matches "Add Slideshow Block" and "Add Slideshow Item to Slideshow Item" — which one .first() hits depends on DOM order, so prefer unambiguous full names with { exact: true }, or scope to the container, or verify via a later assertion (e.g. count of rendered labels) that the intended action happened.
+- Many add buttons ("Add 1-Column Section", block add buttons) live inside hidden lists behind a reveal button (e.g. "List additional actions"). The hidden buttons may be ABSENT from the DOM until the reveal is clicked: getByRole(...).toHaveCount(0) before reveal, 1+ after. Click every reveal button (they are re-created/toggled as lists open) until the target is visible, then click it. Writing this as a local helper (reveal-and-click) keeps tests readable.
+- Paragraph widgets render each added item with a label span (e.g. '.paragraph-type-label'). Asserting that label's text (filter by /Text/i) is the reliable "was added" signal — not URLs, comboboxes, or field labels that often don't exist. Sub-paragraphs (e.g. a slideshow's slide) may label their fields differently than you expect ("Caption" often becomes "Slide Text Line 1" or similar) — read the snapshot's visible labels before filling.
+- jQuery-UI-style "Advanced Options" tabs: fields under a tab are NOT in the DOM until that tab is opened. Opening one tab can re-render the DOM and detach other tabs, so re-query tabs after each click and open until no unselected Advanced Options tab remains (check aria-selected). Wait for the section to render (its label span) BEFORE opening tabs, otherwise only the form-level tab exists.
+- Always wait for an ajax-added element to finish rendering before clicking into it or adding more (e.g. wait for the first paragraph-type-label to be visible). A fixed 1.5–2s settle wait after an add is usually required; clicking an add-more button too early gets silently swallowed by the re-render.
+- <select> options with numeric values: selectOption({ label }) to pick, but assert the selected row with locator('option:checked').toHaveText(...), NOT toHaveValue(numeric).
+- Submit buttons may be labeled differently than "Save" (e.g. "Publish Page"). An empty required title keeps the form on the same URL (native validation) — but NOT every blank field is validated; some empty fields publish successfully. Assert the observed behavior rather than assuming validation.
+- On slow hosts: multi-step flows (several sequential adds) easily exceed the 30s default test timeout. Add test.setTimeout(120000) to such tests, and raise describe-level timeout with test.describe.configure({ timeout: 120000 }).
 
 DEPENDENCY HANDLING:
 - If the test plan shows [depends: test-name], that test must run AFTER the dependency completes
@@ -245,7 +264,8 @@ test.afterEach(async ({ page }, testInfo) => {
 TEST PLAN:
 ${planContent}
 ${contextSection}
-${referenceSection}`;
+${referenceSection}
+${scopeSection}`;
 }
 
 /**
