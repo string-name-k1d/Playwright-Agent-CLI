@@ -10,11 +10,31 @@ export interface ReportOptions {
   config: Config;
 }
 
+/** GitHub-style heading anchor: lowercase, keep alphanumerics and hyphens, spaces to hyphens. */
+function anchorFor(heading: string): string {
+  return heading.toLowerCase().replace(/[^a-z0-9 -]/g, '').replace(/ /g, '-');
+}
+
 function generateMarkdownReport(baseDir: string): string {
   const lines: string[] = ['# pw-cli-agent Report\n'];
   lines.push(`Generated: ${new Date().toISOString()}\n`);
 
   const plans = listArtifacts('plans', baseDir);
+  const tests = listArtifacts('tests', baseDir);
+  const explore = listArtifacts('explore', baseDir);
+  const hasAny = plans.length + tests.length + explore.length > 0;
+
+  if (hasAny) {
+    lines.push('## Contents\n');
+    if (plans.length > 0) {
+      lines.push('- [Test Plans](#test-plans)');
+      for (const f of plans) lines.push(`  - [${f}](#${anchorFor(f)})`);
+      lines.push('');
+    }
+    if (tests.length > 0) lines.push('- [Generated Tests](#generated-tests)\n');
+    if (explore.length > 0) lines.push('- [Exploration Snapshots](#exploration-snapshots)\n');
+  }
+
   if (plans.length > 0) {
     lines.push('## Test Plans\n');
     for (const f of plans) {
@@ -26,7 +46,6 @@ function generateMarkdownReport(baseDir: string): string {
     }
   }
 
-  const tests = listArtifacts('tests', baseDir);
   if (tests.length > 0) {
     lines.push('## Generated Tests\n');
     for (const f of tests) {
@@ -35,7 +54,6 @@ function generateMarkdownReport(baseDir: string): string {
     lines.push('');
   }
 
-  const explore = listArtifacts('explore', baseDir);
   if (explore.length > 0) {
     lines.push('## Exploration Snapshots\n');
     for (const f of explore) {
@@ -44,7 +62,7 @@ function generateMarkdownReport(baseDir: string): string {
     lines.push('');
   }
 
-  if (plans.length === 0 && tests.length === 0 && explore.length === 0) {
+  if (!hasAny) {
     lines.push('_No artifacts found. Run `explore`, `plan`, or `test` commands first._\n');
   }
 
@@ -54,11 +72,12 @@ function generateMarkdownReport(baseDir: string): string {
 function generateHtmlReport(baseDir: string): string {
   const md = generateMarkdownReport(baseDir);
   const body = md
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/^### (.+)$/gm, (_, t) => `<h3 id="${anchorFor(t)}">${t}</h3>`)
+    .replace(/^## (.+)$/gm, (_, t) => `<h2 id="${anchorFor(t)}">${t}</h2>`)
+    .replace(/^# (.+)$/gm, (_, t) => `<h1 id="${anchorFor(t)}">${t}</h1>`)
+    .replace(/^\s*- (.+)$/gm, '<li>$1</li>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[([^\]]+)\]\(([^ )]+)\)/g, '<a href="$2">$1</a>')
     .replace(/\n\n/g, '</p><p>')
     .replace(/^(.+)$/gm, (line) => {
       if (line.startsWith('<')) return line;

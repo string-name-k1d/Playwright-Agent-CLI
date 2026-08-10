@@ -4,41 +4,60 @@ A TypeScript CLI tool implementing an explore > plan > test > report workflow fo
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Quick Start](#quick-start)
-- [Commands](#commands)
-  - [check](#check)
-  - [login](#login)
-  - [import-session](#import-session)
-  - [explore](#explore)
-- [guide](#guided-browsing-session)
-  - [plan](#plan)
-  - [generate](#generate)
-  - [test](#test)
-  - [ui](#ui)
-  - [report](#report)
-  - [skill](#skill)
-  - [autorun](#autorun)
-  - [heal](#heal)
-  - [repl](#repl)
-  - [clean](#clean)
-- [Commands Summary](#commands-summary)
-- [Screenshots](#screenshots)
-- [Natural Language Prompts](#natural-language-prompts)
-- [Explore Registry](#explore-registry)
-- [Website Profiles](#website-profiles)
-- [Site Map](#site-map)
-- [Site Profile](#site-profile)
-- [User References](#user-references)
-- [Locator Rules](#locator-rules)
-- [Accessibility Tree Limitations (CDP)](#accessibility-tree-limitations-cdp)
-- [Architecture](#architecture)
-- [File Structure](#file-structure)
-- [Configuration](#configuration)
-- [Environment Variables](#environment-variables)
-- [Docker](#docker)
-- [Dependencies](#dependencies)
-- [References](#references)
+- [pw-cli-agent](#pw-cli-agent)
+  - [Table of Contents](#table-of-contents)
+  - [Overview](#overview)
+  - [Quick Start](#quick-start)
+  - [Commands](#commands)
+    - [`check`](#check)
+    - [`login`](#login)
+    - [`import-session`](#import-session)
+    - [HTTP Basic Auth](#http-basic-auth)
+    - [`explore`](#explore)
+    - [Guided Browsing Session](#guided-browsing-session)
+    - [Default: Codegen Mode (Playwright Inspector)](#default-codegen-mode-playwright-inspector)
+    - [Alternative: REPL Mode (`--repl`)](#alternative-repl-mode---repl)
+    - [`plan`](#plan)
+      - [Plan Format](#plan-format)
+    - [`generate`](#generate)
+    - [`test`](#test)
+    - [`ui`](#ui)
+    - [`report`](#report)
+    - [`skill`](#skill)
+    - [`autorun`](#autorun)
+    - [`heal`](#heal)
+    - [`repl`](#repl)
+    - [`clean`](#clean)
+  - [Commands Summary](#commands-summary)
+  - [Screenshots](#screenshots)
+  - [Natural Language Prompts](#natural-language-prompts)
+  - [Explore Registry](#explore-registry)
+  - [Website Profiles](#website-profiles)
+    - [Functional filtering](#functional-filtering)
+    - [Compact serialization](#compact-serialization)
+    - [Profile commands](#profile-commands)
+  - [Site Map](#site-map)
+    - [Querying the site map](#querying-the-site-map)
+  - [Site Profile](#site-profile)
+  - [User References](#user-references)
+    - [Usage](#usage)
+    - [Reference Format](#reference-format)
+    - [How It Works](#how-it-works)
+    - [Reference Directory Structure](#reference-directory-structure)
+  - [Locator Rules](#locator-rules)
+  - [Accessibility Tree Limitations (CDP)](#accessibility-tree-limitations-cdp)
+    - [Mitigations and Workarounds](#mitigations-and-workarounds)
+  - [Architecture](#architecture)
+  - [File Structure](#file-structure)
+  - [Configuration](#configuration)
+  - [Environment Variables](#environment-variables)
+  - [Docker](#docker)
+    - [OpenCode Connection](#opencode-connection)
+    - [Usage](#usage-1)
+    - [.env](#env)
+  - [Contribution Rules](#contribution-rules)
+  - [Dependencies](#dependencies)
+  - [References](#references)
 
 ## Overview
 
@@ -49,6 +68,41 @@ Manual:  explore → plan → generate → test → report
                                 ↘ heal ↗
 
 Autorun: explore → plan → [generate → test → heal → generate] → loop until all pass
+```
+
+```mermaid
+---
+config:
+  theme: redux
+  layout: fixed
+---
+flowchart TB
+    n4["Explore"] --> n1["Planner"]
+    n6["Prompt"] --> n1
+    n1 --> n2["Generator"]
+    n2 --> n3["Healer"]
+    n3 --> n10["Success?"]
+    n10 --> n11["Report"] & n1
+    n5["Site Map"]
+    n7["NL Description of testing task (with batch processing)"]
+    n8["Test Cases (.md)"]
+    n9["Test Files (.spec.js)"]
+    n12["Success/<br>Fault unfixable"]
+    n13["Fail"]
+
+    n4@{ shape: rect}
+    n1@{ shape: rect}
+    n6@{ shape: rect}
+    n2@{ shape: rect}
+    n3@{ shape: rect}
+    n10@{ shape: diam}
+    n11@{ shape: rounded}
+    n5@{ shape: text}
+    n7@{ shape: text}
+    n8@{ shape: text}
+    n9@{ shape: text}
+    n12@{ shape: text}
+    n13@{ shape: text}
 ```
 
 ## Quick Start
@@ -210,6 +264,9 @@ Open a browser, navigate to a URL, capture a snapshot and optional screenshot. E
 pw-cli-agent explore --url https://example.com
 pw-cli-agent explore --url https://example.com --screenshot --depth 4 --headed
 
+# Expanded exploration: open droplists/reveals/tabs to capture hidden components
+pw-cli-agent explore --url https://example.com --expanded
+
 # Interactive guided browsing session (codegen mode by default)
 pw-cli-agent explore --guide --url https://example.com
 
@@ -222,9 +279,12 @@ pw-cli-agent explore --guide --url https://example.com --repl
 - `--depth <N>` — snapshot tree depth (default: full)
 - `--screenshot` — also capture a PNG screenshot
 - `--headed` — show browser window
+- `--expanded` — **expanded exploration**: before snapshotting, interactively open droplist/reveal controls so hidden components are captured (see below)
 - `--guide` — interactive guided browsing session (default: codegen mode with Playwright Inspector)
 - `--repl` — use REPL mode instead of codegen (manual text commands)
 - `--profile <path>` — explicit browser profile path (overrides auto-detection)
+
+**Reveal-hidden components (the droplist problem):** on sites like Drupal, secondary actions are NOT present in the DOM until a reveal control is opened — e.g. "List additional actions" / "Toggle Actions" dropbuttons, or the "Advanced Options" jQuery tabs (fields like "Full Width" are absent until the tab is activated). A plain explore snapshot therefore omits those components entirely. `--expanded` runs `expandReveals()` before snapshotting: it iteratively clicks every "List additional actions" button, `.paragraphs-dropdown-toggle` / dropbutton toggles, unselected `[role="tab"]` panels, and collapsed `<details>` elements (multiple passes with settle time), then captures the snapshot. The `plan` command uses this automatically (see [`plan`](#plan)).
 
 Artifacts saved to `./artifacts/explore/`. Registry stored at `./artifacts/explore-registry.json`. Site profile saved to `./artifacts/site-profile.md`.
 
@@ -308,6 +368,10 @@ Session summaries are saved to `./artifacts/guided-session-<timestamp>.md`.
 ### `plan`
 
 Send a snapshot to `opencode` and generate a structured test plan. Queries the **explore registry** for cached snapshots and can auto-explore unvisited pages. Optionally provide natural language requirements to guide what should be tested.
+
+The plan runs an **explore-plan mini-loop**: after each plan is generated, it opens any pages the planner annotated, appends their snapshots to the context, and re-plans — up to `MAX_EXPLORE_DEPTH` iterations — until the planner requests no further pages.
+
+**Expanded re-exploration:** if a plan requests `[explore-expanded: URL]` (or otherwise mentions components hidden behind droplists/reveals/tabs — "List additional actions", "Toggle Actions", "Advanced Options", dropbutton actions), the loop re-explores **exactly that page** interactively with `--expanded` so the hidden components enter the snapshot context and the generated tests can target them. Plain `[explore: URL]` requests stay non-interactive, and expanded requests for a page are only honored once (cached snapshots are never reused for an expanded re-run, since they predate the interaction).
 
 ```bash
 # Auto-explore and plan
@@ -482,7 +546,7 @@ Access the panel from your host browser at `http://localhost:8123`; the headed b
 
 ### `report`
 
-Aggregate artifacts into a summary report.
+Aggregate artifacts into a summary report. The report opens with a **Contents** index (an overview of all its sections): the plan/heal files under `Test Plans` (each linked to its section anchor, `#<file>`), plus `Generated Tests` and `Exploration Snapshots` when present. The HTML variant renders these as in-page anchor links (`id` attributes on each heading).
 
 ```bash
 pw-cli-agent report
@@ -536,7 +600,7 @@ pw-cli-agent autorun --resume abc1234
 **Pipeline loop:**
 1. **Explore** — capture accessibility snapshot (once). The explore feeds the per-site **Website Profile** and **Site Map** (see below), which the planner later uses as structured route + selector context
 2. **Codegen** *(optional, with `--codegen`)* — either record a one-time flow in the browser (viewable via noVNC `http://localhost:6080/vnc.html`; the script is saved to `./artifacts/tests/`, annotated with `[eN]` element refs) or pass an existing codegen/exploration file (`--codegen <file>`) to use it as reference material. Recorded/selected scripts are auto-inlined whenever tests are generated
-3. **Plan** — generate test plan from snapshot via opencode. The planner receives the current site map (routes + elements with best-effort CSS selectors/state) plus any codegen reference script as extra context
+3. **Plan** — generate test plan from snapshot via opencode. The planner receives the current site map (routes + elements with best-effort CSS selectors/state) plus any codegen reference script as extra context. The explore-plan mini-loop (see [`plan`](#plan)) re-explores pages the planner annotates — including interactive **expanded re-exploration** for droplist/reveal-hidden components (e.g. "List additional actions", "Advanced Options" tabs) — before tests are generated
 4. **Generate** — extract test code blocks from plan (falls back to opencode generation, which includes any codegen scripts as reference)
 5. **Test** — execute tests via Playwright (dependent tests run after their dependencies)
 6. **Heal** — re-explore failures, generate a corrected healing plan (passing tests preserved)
@@ -643,9 +707,9 @@ Pruning is opt-in; a bare `pw-cli-agent clean` only touches scratch/temp files. 
 | `check` | Verify environment and connectivity | `--url`, `--screenshot`, `--profile` |
 | `login` | Log in via Drush ULI, save browser profile | `--url`, `--user`, `--uli`, `--drush-cmd`, `--profile` |
 | `import-session` | Reuse a host-browser login: import exported cookies or capture via noVNC | `--cookies`, `--capture`, `--url`, `--profile` |
-| `explore` | Open browser, navigate, capture snapshot (registers in explore registry + per-site profile) | `--url`, `--depth`, `--screenshot`, `--headed`, `--guide`, `--repl`, `--profile` |
+| `explore` | Open browser, navigate, capture snapshot (registers in explore registry + per-site profile) | `--url`, `--depth`, `--screenshot`, `--headed`, `--expanded`, `--guide`, `--repl`, `--profile` |
 | `profile` | Inspect per-site profiles: element trees, registry queries, refs, pages, site map | `tree <url>`, `query <q> [url]`, `ref <eN> [url]`, `pages [url]`, `ls`, `map [url]` |
-| `plan` | Generate test plan from snapshot via opencode (queries/explores registry) | `--url`, `--snapshot`, `--prompt`, `--prompt-file`, `--model`, `--search`, `--explore`, `--reference` |
+| `plan` | Generate test plan from snapshot via opencode (queries/explores registry; runs an explore-plan mini-loop with interactive expanded re-exploration for droplist-hidden components) | `--url`, `--snapshot`, `--prompt`, `--prompt-file`, `--model`, `--search`, `--explore`, `--reference` |
 | `generate` | Generate test files from plans (extract / opencode / interactive codegen with `[eN]` ref annotation; batched generation) | `--plan`, `--extract`, `--codegen`, `--url`, `--profile`, `--reference`, `--batch-size` |
 | `test` | Execute Playwright test files | `--execute`, `--headed`, `--retries`, `--workers`, `--profile` |
 | `ui` | Run the interactive Playwright UI test runner (headed, panel served on `8123`) | `--execute`, `--url`, `--profile`, `--ui-host`, `--ui-port` |
