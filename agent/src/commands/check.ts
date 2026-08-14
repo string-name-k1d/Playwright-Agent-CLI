@@ -1,9 +1,9 @@
 import chalk from 'chalk';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { pwVersion, pwOpen, pwSnapshot, pwScreenshot, pwClose } from '../lib/pw-cli.js';
-import { opencodeVersion } from '../lib/opencode.js';
-import { resolveProfile } from '../config.js';
+import { pwVersion } from '../lib/pw-cli.js';
+import { PlaywrightSession } from '../lib/playwright-session.js';
+import { agentVersion, resolveProviderName } from '../lib/agent-provider.js';
+import { looksLikeLoginPage } from '../lib/login-page.js';
+import { resolveProfile, httpCredentialsFor } from '../config.js';
 
 export interface CheckOptions {
   url?: string;
@@ -31,16 +31,19 @@ export async function checkCommand(opts: CheckOptions): Promise<void> {
     allPassed = false;
   }
 
-  console.log(chalk.cyan('Checking opencode...'));
-  const oc = await opencodeVersion();
+  const provider = resolveProviderName(opts.config);
+  console.log(chalk.cyan(`Checking agent backend (${provider})...`));
+  const oc = await agentVersion(opts.config);
   if (oc.available) {
     const modeLabel = oc.mode === 'http' ? ' (HTTP server)' : ' (CLI)';
-    console.log(chalk.green(`  ✓ opencode found: ${oc.version}${modeLabel}`));
+    console.log(chalk.green(`  ✓ ${oc.provider} backend ready: ${oc.version}${modeLabel}`));
   } else {
-    if (oc.mode === 'http') {
-      console.log(chalk.red('  ✗ opencode server unreachable — set OPENCODE_SERVER_URL or start `opencode serve` on host'));
+    if (oc.provider === 'api') {
+      console.log(chalk.red('  ✗ API provider not configured — set AGENT_API_KEY (and AGENT_API_MODEL / AGENT_API_BASE_URL for non-OpenAI endpoints)'));
+    } else if (oc.mode === 'http') {
+      console.log(chalk.red('  ✗ opencode server unreachable — leave OPENCODE_SERVER_URL empty to use the local CLI mode (opencode serve is currently broken: "Unexpected error / ServeError")'));
     } else {
-      console.log(chalk.red('  ✗ opencode not found — install with: npm install -g opencode-ai'));
+      console.log(chalk.red('  ✗ opencode not found — install with: npm install -g opencode-ai, or switch backends with AGENT_PROVIDER=api + AGENT_API_KEY'));
     }
     allPassed = false;
   }
@@ -51,30 +54,39 @@ export async function checkCommand(opts: CheckOptions): Promise<void> {
     if (profile) {
       console.log(chalk.gray(`  Using browser profile: ${profile}`));
     }
-      const openResult = await pwOpen(opts.url, { profile });
-    if (openResult.exitCode === 0) {
-      console.log(chalk.green('  ✓ Site loaded successfully'));
+    const creds = httpCredentialsFor(opts.config);
+    const session = new PlaywrightSession();
+    try {
+      await session.launch(opts.url, {
+        profile,
+        headless: !(opts.config?.headed ?? false),
+        ...(creds ? { httpCredentials: creds } : {}),
+      });
+      const info = await session.getPageInfo();
+      console.log(chalk.green(`  ✓ Site loaded successfully${info.url ? ` (${info.url})` : ''}`));
+      if (info.title) console.log(chalk.gray(`  Title: ${info.title}`));
 
-      const snapResult = await pwSnapshot();
-      if (snapResult.exitCode === 0) {
+      if (info.url && looksLikeLoginPage(info.url)) {
+        console.log(chalk.yellow('  ⚠ Loaded page is a login/SSO page — the browser profile is not authenticated for this site.'));
+        console.log(chalk.yellow('    Run `import-session --capture --url <site>` (complete the login via noVNC) or import host cookies with `import-session --cookies <file>`.'));
+      }
+
+      const snap = await session.getAccessibilitySnapshot().catch(() => '');
+      if (snap && snap.trim().length > 0) {
         console.log(chalk.green('  ✓ Snapshot captured'));
       } else {
         console.log(chalk.yellow('  ⚠ Snapshot failed but site loaded'));
       }
 
       if (opts.screenshot) {
-        const imgResult = await pwScreenshot(`check-${Date.now()}.png`);
-        if (imgResult.exitCode === 0) {
-          console.log(chalk.green('  ✓ Screenshot saved'));
-        } else {
-          console.log(chalk.yellow(`  ⚠ Screenshot failed: ${imgResult.stderr}`));
-        }
+        const path = await session.screenshot(`check-${Date.now()}.png`);
+        console.log(chalk.green(`  ✓ Screenshot saved: ${path}`));
       }
-
-      await pwClose();
-    } else {
-      console.log(chalk.red(`  ✗ Failed to load site: ${openResult.stderr}`));
+    } catch (err: any) {
+      console.log(chalk.red(`  ✗ Failed to load site: ${err.message}`));
       allPassed = false;
+    } finally {
+      await session.close();
     }
   }
 

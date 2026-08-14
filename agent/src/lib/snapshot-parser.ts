@@ -13,6 +13,12 @@ export interface ElementInfo {
   pressed?: boolean;
   selected?: boolean;
   orientation?: string;
+  selector?: string;
+  domId?: string;
+  required?: boolean;
+  min?: number;
+  max?: number;
+  placeholder?: string;
 }
 
 export interface ContentBlock {

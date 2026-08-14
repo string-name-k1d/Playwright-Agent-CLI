@@ -15,6 +15,7 @@ services:
     ports:
       - "6080:6080"   # noVNC web client
       - "5900:5900"   # VNC (optional, for native VNC clients)
+      - "8123:8123"   # Playwright UI mode panel (pw-cli-agent ui)
     networks:
       - drupal_k8
       - default

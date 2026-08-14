@@ -2,6 +2,7 @@ import { writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { getExploreEntries, getSnapshotElements, type ExploreEntry } from './explore-registry.js';
 import { parseSnapshotElements, getElementSummary, type SnapshotElements } from './snapshot-parser.js';
+import { listWebsiteProfiles } from './website-profile.js';
 
 const PROFILE_FILE = 'site-profile.md';
 
@@ -234,6 +235,36 @@ export function saveSiteProfile(baseDir: string): string | null {
     lines.push(`- **URL:** ${p.url}`);
     lines.push(`- **Headings:** ${p.headings.join(', ') || 'none'}`);
     lines.push('');
+  }
+
+  // Per-site structured profiles (element trees + registry)
+  const siteProfiles = listWebsiteProfiles(baseDir);
+  if (siteProfiles.length > 0) {
+    lines.push(`## Website Profiles`);
+    lines.push('');
+    lines.push(`Structured per-site profiles store hierarchical element trees (with [eN] refs), related-page links, and a searchable registry. Query them with:`);
+    lines.push('');
+    lines.push('```');
+    lines.push(`pwcli profile tree <url>`);
+    lines.push(`pwcli profile query <name|role|text> [url]`);
+    lines.push(`pwcli profile ref <eN> [url]`);
+    lines.push(`pwcli profile pages [url]`);
+    lines.push(`pwcli profile ls`);
+    lines.push(`pwcli profile map [url]`);
+    lines.push('```');
+    lines.push('');
+    for (const sp of siteProfiles) {
+      lines.push(`### ${sp.host}`);
+      lines.push(`- **Profile:** \`website-profiles/${sp.host}/site_index.json\` (+ \`specs/\` per route)`);
+      lines.push(`- **Base URL:** ${sp.baseUrl}`);
+      lines.push(`- **Pages:** ${sp.pages.length}`);
+      lines.push(`- **Elements indexed:** ${sp.registry.length}`);
+      lines.push('');
+      for (const p of sp.pages.slice(0, 10)) {
+        lines.push(`  - [${p.title}](${p.url}) — ${p.elementCount} elements, ${p.linkCount} links`);
+      }
+      lines.push('');
+    }
   }
 
   const content = lines.join('\n');

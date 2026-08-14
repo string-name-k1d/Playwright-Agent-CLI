@@ -1,15 +1,19 @@
 import chalk from 'chalk';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, isAbsolute, basename } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { exploreCommand } from './explore.js';
 import { planCommand } from './plan.js';
-import { extractTestsFromPlan, generateFromPlan } from './generate.js';
+import { extractTestsFromPlan, generateFromPlan, launchCodegen, annotateCodegenOutput, resolveStorageState } from './generate.js';
 import { runPlaywrightTest, saveTestResult, cleanupRunDir, RUN_DIR } from './test.js';
 import { healCommand } from './heal.js';
-import { ensureArtifactsDir, getLatestFile, wrapInTest, parsePlanTestCases, computeDependencyLevels, extractCodeBlocks } from '../lib/artifacts.js';
-import { Config, resolveProfile } from '../config.js';
+import { ensureArtifactsDir, getLatestFile, parsePlanTestCases, computeDependencyLevels, extractCodeBlocks } from '../lib/artifacts.js';
+import { hostFromUrl, profileFileFor } from '../lib/website-profile.js';
+import { siteMapFileFor, loadSiteMap } from '../lib/site-map.js';
+import { refreshWebsiteProfile } from '../lib/profile-refresh.js';
+import { Config, resolveProfile, httpCredentialsFor } from '../config.js';
+import { resolveAgentModel } from '../lib/agent-provider.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -23,9 +27,12 @@ interface AutorunState {
   prompt?: string;
   promptFile?: string;
   profile?: string;
+  codegen?: boolean | string;
+  codegenPath?: string;
   snapshotPath?: string;
   planPath?: string;
   testFiles: string[];
+  batchSize?: number;
   allPassed: boolean;
   exploredUrls: string[];
   startedAt: string;
@@ -83,18 +90,43 @@ async function doExplore(url: string, headed: boolean, config: Config, profile?:
   return snap;
 }
 
-async function doPlan(snapshotPath: string, url: string, config: Config, prompt?: string, promptFile?: string): Promise<string> {
+async function doPlan(snapshotPath: string, url: string, config: Config, prompt?: string, promptFile?: string, codegenPath?: string): Promise<string> {
   step('Plan');
-  await planCommand({ snapshot: snapshotPath, url, prompt, promptFile, config });
+  await planCommand({ snapshot: snapshotPath, url, prompt, promptFile, codegenFile: codegenPath, config });
   const plan = getLatestFile('plans', config.outputDir);
   if (!plan) throw new Error('No plan produced');
   substep(`Plan: ${plan}`);
   return plan;
 }
 
-async function doGenerate(planPath: string, url: string | undefined, config: Config): Promise<string[]> {
+async function doCodegen(url: string, config: Config, profile?: string): Promise<string> {
+  step('Codegen');
+  console.log(chalk.gray('  Record the target flow in the browser (noVNC: http://localhost:6080/vnc.html, VNC: localhost:5900).'));
+  console.log(chalk.gray('  Close codegen when done — the script is saved, annotated with element refs, and used as'));
+  console.log(chalk.gray('  reference material by the AI generator when producing tests from the plan.'));
+  const testsDir = join(config.outputDir, 'tests');
+  mkdirSync(testsDir, { recursive: true });
+  const outputPath = join(testsDir, `codegen-${Date.now()}.spec.ts`);
+  const storageState = resolveStorageState(profile);
+  await launchCodegen(url, storageState, outputPath);
+  annotateCodegenOutput(outputPath, config.outputDir);
+  substep(`Codegen script: ${outputPath}`);
+  return outputPath;
+}
+
+async function doGenerate(planPath: string, url: string | undefined, config: Config, codegenPath?: string, batchSize?: number): Promise<string[]> {
   step('Generate');
   const planContent = readFileSync(planPath, 'utf-8');
+
+  // When an existing codegen/exploration file is supplied as a reference,
+  // skip extraction and force AI generation so the recorded script is
+  // inlined as authoritative reference material for locators/interactions.
+  if (codegenPath) {
+    console.log(chalk.gray(`  Using existing codegen/exploration file as reference: ${codegenPath}`));
+    const files = await generateFromPlan(planContent, url, config, undefined, codegenPath, batchSize);
+    substep(`Generated ${files.length} test file(s)`);
+    return files;
+  }
 
   // Try extracting code blocks first
   try {
@@ -104,18 +136,14 @@ async function doGenerate(planPath: string, url: string | undefined, config: Con
       return files;
     }
   } catch {
-    // No code blocks found — fall through to opencode generation
+    // No code blocks found — fall through to AI generation
   }
 
-  // Fallback to opencode generation
-  console.log(chalk.yellow('No code blocks in plan — generating via opencode...'));
-  const testCode = await generateFromPlan(planContent, url, config);
-  const wrappedCode = wrapInTest(testCode, `generated-${Date.now()}`);
-  const testFilename = `generated-${Date.now()}.spec.ts`;
-  const { saveTest } = await import('../lib/artifacts.js');
-  const testPath = saveTest(wrappedCode, testFilename, config.outputDir);
-  substep(`Generated: ${testPath}`);
-  return [testPath];
+  // Fallback to AI generation
+  console.log(chalk.yellow('No code blocks in plan — generating via AI...'));
+  const files = await generateFromPlan(planContent, url, config, undefined, undefined, batchSize);
+  substep(`Generated ${files.length} test file(s)`);
+  return files;
 }
 
 async function doTest(testFiles: string[], headed: boolean, config: Config, storageState?: string, planPath?: string): Promise<boolean> {
@@ -161,7 +189,7 @@ async function doTest(testFiles: string[], headed: boolean, config: Config, stor
   mkdirSync(RUN_DIR, { recursive: true });
 
   try {
-    const result = await runPlaywrightTest(testFiles, headed, undefined, storageState, undefined, undefined, fileLevels);
+    const result = await runPlaywrightTest(testFiles, headed, undefined, storageState, undefined, undefined, fileLevels, httpCredentialsFor(config));
     console.log(result.output);
 
     // Save combined result under each test file for compatibility
@@ -211,6 +239,8 @@ export interface AutorunOptions {
   maxIterations?: number;
   resume?: string;
   profile?: string;
+  codegen?: boolean | string;
+  batchSize?: number;
   config: Config;
 }
 
@@ -258,6 +288,8 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
       prompt: opts.prompt,
       promptFile: opts.promptFile,
       profile: opts.profile,
+      codegen: opts.codegen,
+      batchSize: opts.batchSize,
       testFiles: [],
       allPassed: false,
       exploredUrls: [],
@@ -267,14 +299,19 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
     banner('autorun');
     console.log(chalk.gray(`  Run ID: ${state.runId}`));
     console.log(chalk.gray(`  URL:    ${state.url}`));
-    console.log(chalk.gray(`  Model:  ${opts.config.opencodeModel ?? 'default'}`));
+    console.log(chalk.gray(`  Model:  ${resolveAgentModel(opts.config) ?? 'default'}`));
     console.log(chalk.gray(`  Max iterations: ${state.maxIterations}`));
+    if (state.batchSize) console.log(chalk.gray(`  Generation batch size: ${state.batchSize}`));
+    if (state.codegen) console.log(chalk.gray(`  Codegen: ${typeof state.codegen === 'string' ? `use existing file as reference: ${state.codegen}` : 'record a flow (ref-annotated) before planning'}`));
   }
 
   const startTime = Date.now();
   const config = { ...opts.config };
-  const profile = resolveProfile(opts.profile, config);
+  // Resolve the profile (explicit flag > persisted state > auto-detected ./auth-profile)
+  // and persist it so every step (explore, codegen, test, heal) uses the same auth.
+  const profile = resolveProfile(opts.profile ?? state.profile, config);
   if (profile) {
+    if (!state.profile) state.profile = profile;
     console.log(chalk.gray(`  Profile: ${profile}`));
   }
 
@@ -283,7 +320,18 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
     if (state.step === 'explore') {
       state.snapshotPath = await doExplore(state.url, state.headed, config, profile);
       state.exploredUrls.push(state.url);
-      state.step = 'plan';
+      // Profile-exploration integration: surface the per-site profile + site
+      // map that were (re)built from this explore so subsequent plan/generate
+      // steps have structured route + selector context.
+      const host = hostFromUrl(state.url);
+      substep(`Website profile: ${profileFileFor(state.url, config.outputDir)}`);
+      const map = loadSiteMap(host, config.outputDir);
+      if (map) {
+        substep(`Site map: ${map.routes.length} route(s) — ${siteMapFileFor(host, config.outputDir)}`);
+      } else {
+        substep('Site map: not available yet (regenerates as pages are explored)');
+      }
+      state.step = state.codegen ? 'codegen' : 'plan';
       saveState(state);
     }
 
@@ -293,10 +341,35 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
       console.log(chalk.bold(`║  Iteration ${state.iteration}/${state.maxIterations}`));
       console.log(chalk.bold(`╚═══════════════════════════════════════════════╝`));
 
+      // Optional one-time codegen (runs before planning, once). When a file
+      // path is given, use the existing codegen/exploration file as reference
+      // instead of recording a new flow.
+      if (state.step === 'codegen') {
+        if (!state.snapshotPath) {
+          console.error(chalk.red('No snapshot path — cannot record codegen'));
+          break;
+        }
+        if (typeof state.codegen === 'string' && state.codegen.trim() !== '') {
+          const file = state.codegen;
+          const resolved = isAbsolute(file) ? file : join(process.cwd(), file);
+          if (!existsSync(resolved)) {
+            console.error(chalk.red(`Codegen reference file not found: ${file}`));
+            break;
+          }
+          annotateCodegenOutput(resolved, config.outputDir);
+          state.codegenPath = resolved;
+          substep(`Using existing codegen/exploration file as reference: ${resolved}`);
+        } else {
+          state.codegenPath = await doCodegen(state.url, config, profile);
+        }
+        state.step = 'plan';
+        saveState(state);
+      }
+
       // Heal (if resuming from heal step or after test failure)
       if (state.step === 'heal') {
         if (state.iteration < state.maxIterations) {
-          const healPlanPath = await doHeal(state.url, state.headed, config, state.snapshotPath, state.profile, state.testFiles, state.planPath);
+          const healPlanPath = await doHeal(state.url, state.headed, config, state.snapshotPath, profile, state.testFiles, state.planPath);
           if (healPlanPath) {
             state.planPath = healPlanPath;
           }
@@ -317,7 +390,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
         }
         state.planPath = await doPlan(
           state.snapshotPath, state.url, config,
-          state.prompt, state.promptFile
+          state.prompt, state.promptFile, state.codegenPath
         );
         state.step = 'generate';
         saveState(state);
@@ -329,7 +402,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
           console.error(chalk.red('No plan path — cannot generate'));
           break;
         }
-        state.testFiles = await doGenerate(state.planPath, state.url, config);
+        state.testFiles = await doGenerate(state.planPath, state.url, config, state.codegenPath, state.batchSize);
         if (state.testFiles.length === 0) {
           console.error(chalk.red('No test files produced — aborting'));
           break;
@@ -344,7 +417,18 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
         saveState(state);
 
         if (state.allPassed) {
-          console.log(chalk.green.bold('\n✓ All tests passed — stopping loop\n'));
+          console.log(chalk.green.bold('\n✓ All tests passed — refreshing website profile\n'));
+          try {
+            const refresh = await refreshWebsiteProfile({
+              url: state.url,
+              headed: state.headed,
+              profile,
+              config,
+            });
+            substep(`Profile refresh: ${refresh.added} new page(s) added (${refresh.total} total)`);
+          } catch (err: any) {
+            console.log(chalk.yellow(`  Profile refresh failed: ${err.message}`));
+          }
           break;
         }
       }
@@ -352,7 +436,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
       // Heal (if not last iteration)
       if (state.iteration < state.maxIterations) {
         if (state.step === 'test' || state.step === 'heal') {
-          const healPlanPath = await doHeal(state.url, state.headed, config, state.snapshotPath, state.profile, state.testFiles, state.planPath);
+          const healPlanPath = await doHeal(state.url, state.headed, config, state.snapshotPath, profile, state.testFiles, state.planPath);
           if (healPlanPath) {
             state.planPath = healPlanPath;
           }
@@ -386,7 +470,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
   console.log(chalk.gray(`  Run ID:   ${state.runId}`));
   console.log(chalk.gray(`  Iters:    ${state.iteration}/${state.maxIterations}`));
   console.log(chalk.gray(`  Elapsed:  ${elapsed}s`));
-  console.log(chalk.gray(`  Resume:   pw-cli-agent autorun --resume ${state.runId}`));
+  console.log(chalk.gray(`  Resume:   pwcli autorun --resume ${state.runId}`));
   console.log(chalk.gray(`  Artifacts: ${config.outputDir}`));
   console.log(chalk.bold('═══════════════════════════════════════════════\n'));
 

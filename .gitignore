@@ -23,11 +23,23 @@ tests/
 /*.spec.ts
 /*.png
 
+# Scratch probe/test specs and one-off scripts
+**/probe-*.spec.ts
+**/poll-*.sh
+
 # Stale snapshots leaked to root
 **/explore-*.yaml
 
 # Environment variables (contains secrets)
 .env
+.env.*
+
+# Browser profiles / captured sessions (contain cookies, storage state, credentials)
+auth-profile/
+auth-profile-builder/
+
+# Run screenshots (also bundled into the archives/)
+autorun-screenshots/
 
 # OS files
 Thumbs.db

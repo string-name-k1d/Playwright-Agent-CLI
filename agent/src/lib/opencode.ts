@@ -5,6 +5,7 @@ import { request as httpsRequest } from 'node:https';
 export interface OpenCodeOptions {
   model?: string;
   session?: string;
+  agent?: string;
   quiet?: boolean;
   timeout?: number;
   cwd?: string;
@@ -119,6 +120,7 @@ async function opencodeViaCli(
 
   baseArgs.push('--format', 'json');
   if (opts.model) baseArgs.push('-m', opts.model);
+  if (opts.agent) baseArgs.push('--agent', opts.agent);
 
   // Pass the prompt inline as the message. Inline prompts keep the model focused
   // on answering (no tool exploration), whereas --file attachment mode can make
@@ -246,6 +248,12 @@ function runOpencodeCli(
   });
 }
 
+/**
+ * @deprecated Legacy opencode backend. Callers should use the provider-agnostic
+ * `agentRun` from `lib/agent-provider.ts`, which dispatches to the configured
+ * backend (opencode by default, or any OpenAI-compatible API). This function is
+ * only invoked directly by that dispatcher; new code must not call it directly.
+ */
 export async function opencodeRun(
   prompt: string,
   opts: OpenCodeOptions = {}
@@ -292,6 +300,10 @@ export async function opencodeRun(
   return { output: 'Max retries exceeded', exitCode: 1 };
 }
 
+/**
+ * @deprecated Legacy opencode backend detection. Prefer `agentVersion` from
+ * `lib/agent-provider.ts`, which also reports on non-opencode backends.
+ */
 export async function opencodeVersion(): Promise<{ available: boolean; version?: string; mode: string }> {
   const serverUrl = getServerUrl();
   if (serverUrl) {
@@ -317,6 +329,11 @@ export async function opencodeVersion(): Promise<{ available: boolean; version?:
   return { available: false, mode: 'cli' };
 }
 
+/**
+ * @deprecated Legacy opencode-specific output extractor. Prefer the
+ * re-exported `extractStructuredOutput` from `lib/agent-provider.ts`, which
+ * accepts results from any agent backend.
+ */
 export function extractStructuredOutput(result: OpenCodeResult): any {
   if (result.structured?.info?.structured_output) {
     return result.structured.info.structured_output;
@@ -353,6 +370,10 @@ export function extractStructuredOutput(result: OpenCodeResult): any {
   return result.output;
 }
 
+/**
+ * @deprecated Legacy opencode-specific markdown extractor. Prefer the
+ * re-exported `extractMarkdown` from `lib/agent-provider.ts`.
+ */
 export function extractMarkdown(result: OpenCodeResult): string {
   const raw = extractStructuredOutput(result);
   if (typeof raw !== 'string') return JSON.stringify(raw, null, 2);

@@ -15,7 +15,9 @@
     "plan": "node dist/index.js plan",
     "test": "node dist/index.js test",
     "report": "node dist/index.js report",
-    "skill": "node dist/index.js skill"
+    "skill": "node dist/index.js skill",
+    "clean": "node dist/index.js clean",
+    "import-session": "node dist/index.js import-session"
   },
   "keywords": ["playwright", "testing", "opencode", "e2e", "cli"],
   "author": "",

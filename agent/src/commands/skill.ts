@@ -27,15 +27,15 @@ Automated end-to-end testing workflow for web applications.
 ## Commands
 
 \`\`\`bash
-pw-cli-agent check                     # verify tools + site (uses TARGET_URL)
-pw-cli-agent check --url <site>        # verify tools + specific site
-pw-cli-agent check --url <site> --screenshot  # verify + capture screenshot
-pw-cli-agent explore                   # capture page snapshot (uses TARGET_URL)
-pw-cli-agent plan                      # generate test plan from latest snapshot
-pw-cli-agent test --plan <file>        # generate + run tests from plan
-pw-cli-agent test --generate           # interactive playwright codegen
-pw-cli-agent test --execute <file>     # run existing test file
-pw-cli-agent report                    # generate summary report
+pwcli check                     # verify tools + site (uses TARGET_URL)
+pwcli check --url <site>        # verify tools + specific site
+pwcli check --url <site> --screenshot  # verify + capture screenshot
+pwcli explore                   # capture page snapshot (uses TARGET_URL)
+pwcli plan                      # generate test plan from latest snapshot
+pwcli test --plan <file>        # generate + run tests from plan
+pwcli test --generate           # interactive playwright codegen
+pwcli test --execute <file>     # run existing test file
+pwcli report                    # generate summary report
 \`\`\`
 
 ## When to use
