@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileS
 import { join, basename } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { opencodeRun, extractStructuredOutput } from '../lib/opencode.js';
+import { agentRun, extractStructuredOutput } from '../lib/agent-provider.js';
 import { ensureArtifactsDir } from '../lib/artifacts.js';
 import { healerPrompt } from '../lib/prompt-templates.js';
 import { Config, httpCredentialsFor } from '../config.js';
@@ -307,10 +307,7 @@ export async function healTest(
   console.log(chalk.yellow('Attempting self-heal...'));
 
   const prompt = healerPrompt(testCode, errorOutput, snapshotContent);
-  const result = await opencodeRun(prompt, {
-    model: config.opencodeModel,
-    timeout: 120000,
-  });
+  const result = await agentRun(prompt, { timeout: 120000 }, config);
 
   if (result.exitCode !== 0) return testCode;
 

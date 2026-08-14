@@ -13,6 +13,7 @@ import { hostFromUrl, profileFileFor } from '../lib/website-profile.js';
 import { siteMapFileFor, loadSiteMap } from '../lib/site-map.js';
 import { refreshWebsiteProfile } from '../lib/profile-refresh.js';
 import { Config, resolveProfile, httpCredentialsFor } from '../config.js';
+import { resolveAgentModel } from '../lib/agent-provider.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -118,7 +119,7 @@ async function doGenerate(planPath: string, url: string | undefined, config: Con
   const planContent = readFileSync(planPath, 'utf-8');
 
   // When an existing codegen/exploration file is supplied as a reference,
-  // skip extraction and force opencode generation so the recorded script is
+  // skip extraction and force AI generation so the recorded script is
   // inlined as authoritative reference material for locators/interactions.
   if (codegenPath) {
     console.log(chalk.gray(`  Using existing codegen/exploration file as reference: ${codegenPath}`));
@@ -135,11 +136,11 @@ async function doGenerate(planPath: string, url: string | undefined, config: Con
       return files;
     }
   } catch {
-    // No code blocks found — fall through to opencode generation
+    // No code blocks found — fall through to AI generation
   }
 
-  // Fallback to opencode generation
-  console.log(chalk.yellow('No code blocks in plan — generating via opencode...'));
+  // Fallback to AI generation
+  console.log(chalk.yellow('No code blocks in plan — generating via AI...'));
   const files = await generateFromPlan(planContent, url, config, undefined, undefined, batchSize);
   substep(`Generated ${files.length} test file(s)`);
   return files;
@@ -298,7 +299,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
     banner('autorun');
     console.log(chalk.gray(`  Run ID: ${state.runId}`));
     console.log(chalk.gray(`  URL:    ${state.url}`));
-    console.log(chalk.gray(`  Model:  ${opts.config.opencodeModel ?? 'default'}`));
+    console.log(chalk.gray(`  Model:  ${resolveAgentModel(opts.config) ?? 'default'}`));
     console.log(chalk.gray(`  Max iterations: ${state.maxIterations}`));
     if (state.batchSize) console.log(chalk.gray(`  Generation batch size: ${state.batchSize}`));
     if (state.codegen) console.log(chalk.gray(`  Codegen: ${typeof state.codegen === 'string' ? `use existing file as reference: ${state.codegen}` : 'record a flow (ref-annotated) before planning'}`));
@@ -469,7 +470,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
   console.log(chalk.gray(`  Run ID:   ${state.runId}`));
   console.log(chalk.gray(`  Iters:    ${state.iteration}/${state.maxIterations}`));
   console.log(chalk.gray(`  Elapsed:  ${elapsed}s`));
-  console.log(chalk.gray(`  Resume:   pw-cli-agent autorun --resume ${state.runId}`));
+  console.log(chalk.gray(`  Resume:   pwcli autorun --resume ${state.runId}`));
   console.log(chalk.gray(`  Artifacts: ${config.outputDir}`));
   console.log(chalk.bold('═══════════════════════════════════════════════\n'));
 

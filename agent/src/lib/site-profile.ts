@@ -245,12 +245,12 @@ export function saveSiteProfile(baseDir: string): string | null {
     lines.push(`Structured per-site profiles store hierarchical element trees (with [eN] refs), related-page links, and a searchable registry. Query them with:`);
     lines.push('');
     lines.push('```');
-    lines.push(`pw-cli-agent profile tree <url>`);
-    lines.push(`pw-cli-agent profile query <name|role|text> [url]`);
-    lines.push(`pw-cli-agent profile ref <eN> [url]`);
-    lines.push(`pw-cli-agent profile pages [url]`);
-    lines.push(`pw-cli-agent profile ls`);
-    lines.push(`pw-cli-agent profile map [url]`);
+    lines.push(`pwcli profile tree <url>`);
+    lines.push(`pwcli profile query <name|role|text> [url]`);
+    lines.push(`pwcli profile ref <eN> [url]`);
+    lines.push(`pwcli profile pages [url]`);
+    lines.push(`pwcli profile ls`);
+    lines.push(`pwcli profile map [url]`);
     lines.push('```');
     lines.push('');
     for (const sp of siteProfiles) {

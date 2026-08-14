@@ -43,7 +43,7 @@ function showHelp() {
   console.log(chalk.cyan('  --help                             ') + chalk.gray('Show Commander help for a command'));
   console.log();
   console.log(chalk.gray('  Shortcuts: use ↑/↓ for history, Tab for completion'));
-  console.log(chalk.gray('  Commands are passed through to pw-cli-agent (e.g. explore --url http://...)\n'));
+  console.log(chalk.gray('  Commands are passed through to the CLI (e.g. explore --url http://...)\n'));
 }
 
 function parseInput(line: string): { command: string; args: string[] } {
@@ -77,10 +77,6 @@ function parseInput(line: string): { command: string; args: string[] } {
 
   const command = args[0] ?? '';
   return { command, args: args.slice(1) };
-}
-
-function buildArgv(command: string, args: string[]): string[] {
-  return ['node', 'pw-cli-agent', command, ...args];
 }
 
 function prompt(state: SessionState): string {

@@ -32,7 +32,7 @@ function validateBatchSize(value: number | undefined): number | undefined {
 
 program
   .name('pw-cli-agent')
-  .description('Playwright CLI + OpenCode agent for automated web testing')
+  .description('Playwright CLI + AI agent for automated web testing (opencode CLI or OpenAI-compatible APIs)')
   .version('1.0.0')
   .option('--config <path>', 'Path to config file');
 
@@ -232,10 +232,10 @@ profileCmd
 
 program
   .command('plan')
-  .description('Generate test plan from snapshot via opencode')
+  .description('Generate test plan from snapshot via the AI agent')
   .option('--snapshot <file>', 'Specific snapshot file to analyze')
   .option('--url <url>', 'Auto-explore if no snapshot provided (falls back to TARGET_URL)')
-  .option('--model <model>', 'OpenCode model override')
+  .option('--model <model>', 'Agent model override')
   .option('--output <file>', 'Custom output path')
   .option('--prompt <text>', 'Natural language requirements for the test plan')
   .option('--prompt-file <file>', 'Markdown file containing requirements/targets to test')
@@ -300,7 +300,7 @@ program
   .description('Generate Playwright test files from plans')
   .option('--url <url>', 'Target URL (falls back to TARGET_URL env / config)')
   .option('--plan <file>', 'Generate tests from plan file')
-  .option('--extract', 'Extract test code directly from plan (skip opencode generation)')
+  .option('--extract', 'Extract test code directly from plan (skip AI generation)')
   .option('--codegen', 'Launch interactive playwright codegen')
   .option('--headed', 'Show browser window')
   .option('--profile <path>', 'Browser profile for auth state (auto-detects ./auth-profile)')
@@ -412,7 +412,7 @@ program
   .command('heal')
   .description('Re-explore failing pages and generate a corrected test plan')
   .option('--url <url>', 'Target URL (falls back to TARGET_URL env / config)')
-  .option('--model <model>', 'OpenCode model override')
+  .option('--model <model>', 'Agent model override')
   .option('--headed', 'Show browser window')
   .option('--profile <path>', 'Persistent browser profile for saved login state')
   .action(async (opts) => {

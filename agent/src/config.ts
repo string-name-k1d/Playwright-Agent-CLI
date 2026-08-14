@@ -5,7 +5,16 @@ import { homedir } from 'node:os';
 export interface Config {
   /*! Url for  target website */
   targetUrl?: string;
+  /*! Agent backend: 'opencode' (default) or 'api' (OpenAI-compatible chat-completions) */
+  agentProvider?: string;
+  /*! Model for the opencode backend */
   opencodeModel?: string;
+  /*! Model for the api backend */
+  apiModel?: string;
+  /*! Base URL for the api backend (default: https://api.openai.com/v1) */
+  apiBaseUrl?: string;
+  /*! Request timeout (ms) for the api backend */
+  apiTimeout?: number;
   outputDir: string;
   playwrightCliPath: string;
   opencodePath: string;
@@ -55,7 +64,14 @@ export function loadConfig(overridePath?: string): Config {
   }
 
   const envConfig: Partial<Config> = {};
+  if (process.env.AGENT_PROVIDER) envConfig.agentProvider = process.env.AGENT_PROVIDER;
   if (process.env.OPENCODE_MODEL) envConfig.opencodeModel = process.env.OPENCODE_MODEL;
+  if (process.env.AGENT_API_MODEL) envConfig.apiModel = process.env.AGENT_API_MODEL;
+  if (process.env.AGENT_API_BASE_URL) envConfig.apiBaseUrl = process.env.AGENT_API_BASE_URL;
+  if (process.env.AGENT_API_TIMEOUT) {
+    const t = parseInt(process.env.AGENT_API_TIMEOUT, 10);
+    if (!Number.isNaN(t)) envConfig.apiTimeout = t;
+  }
   if (process.env.TARGET_URL) envConfig.targetUrl = process.env.TARGET_URL;
   if (process.env.PW_CLI_HEADED) envConfig.headed = process.env.PW_CLI_HEADED === 'true';
   if (process.env.PW_CLI_OUTPUT_DIR) envConfig.outputDir = process.env.PW_CLI_OUTPUT_DIR;
@@ -82,7 +98,11 @@ export function resolveConfig(cliFlags: Partial<Config>, configPath?: string): C
   const merged = { ...base };
 
   if (cliFlags.targetUrl !== undefined) merged.targetUrl = cliFlags.targetUrl;
+  if (cliFlags.agentProvider !== undefined) merged.agentProvider = cliFlags.agentProvider;
   if (cliFlags.opencodeModel !== undefined) merged.opencodeModel = cliFlags.opencodeModel;
+  if (cliFlags.apiModel !== undefined) merged.apiModel = cliFlags.apiModel;
+  if (cliFlags.apiBaseUrl !== undefined) merged.apiBaseUrl = cliFlags.apiBaseUrl;
+  if (cliFlags.apiTimeout !== undefined) merged.apiTimeout = cliFlags.apiTimeout;
   if (cliFlags.outputDir !== undefined) merged.outputDir = cliFlags.outputDir;
   if (cliFlags.headed !== undefined) merged.headed = cliFlags.headed;
   if (cliFlags.snapshotDepth !== undefined) merged.snapshotDepth = cliFlags.snapshotDepth;

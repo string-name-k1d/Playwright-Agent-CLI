@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { pwVersion } from '../lib/pw-cli.js';
 import { PlaywrightSession } from '../lib/playwright-session.js';
-import { opencodeVersion } from '../lib/opencode.js';
+import { agentVersion, resolveProviderName } from '../lib/agent-provider.js';
 import { looksLikeLoginPage } from '../lib/login-page.js';
 import { resolveProfile, httpCredentialsFor } from '../config.js';
 
@@ -31,16 +31,19 @@ export async function checkCommand(opts: CheckOptions): Promise<void> {
     allPassed = false;
   }
 
-  console.log(chalk.cyan('Checking opencode...'));
-  const oc = await opencodeVersion();
+  const provider = resolveProviderName(opts.config);
+  console.log(chalk.cyan(`Checking agent backend (${provider})...`));
+  const oc = await agentVersion(opts.config);
   if (oc.available) {
     const modeLabel = oc.mode === 'http' ? ' (HTTP server)' : ' (CLI)';
-    console.log(chalk.green(`  ✓ opencode found: ${oc.version}${modeLabel}`));
+    console.log(chalk.green(`  ✓ ${oc.provider} backend ready: ${oc.version}${modeLabel}`));
   } else {
-    if (oc.mode === 'http') {
+    if (oc.provider === 'api') {
+      console.log(chalk.red('  ✗ API provider not configured — set AGENT_API_KEY (and AGENT_API_MODEL / AGENT_API_BASE_URL for non-OpenAI endpoints)'));
+    } else if (oc.mode === 'http') {
       console.log(chalk.red('  ✗ opencode server unreachable — leave OPENCODE_SERVER_URL empty to use the local CLI mode (opencode serve is currently broken: "Unexpected error / ServeError")'));
     } else {
-      console.log(chalk.red('  ✗ opencode not found — install with: npm install -g opencode-ai'));
+      console.log(chalk.red('  ✗ opencode not found — install with: npm install -g opencode-ai, or switch backends with AGENT_PROVIDER=api + AGENT_API_KEY'));
     }
     allPassed = false;
   }

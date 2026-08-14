@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { opencodeRun, extractMarkdown } from '../lib/opencode.js';
+import { agentRun, extractMarkdown, resolveProviderName } from '../lib/agent-provider.js';
 import { savePlan, ensureArtifactsDir, getLatestFile, isValidPlan, stripPreamble } from '../lib/artifacts.js';
 import { plannerPrompt } from '../lib/prompt-templates.js';
 import { exploreCommand } from './explore.js';
@@ -378,9 +378,9 @@ async function generatePlan(
   let plan = '';
   let lastValidation: ReturnType<typeof isValidPlan> = { valid: false, score: 0, reason: '' };
 
-  const dumpDiagnostics = (result: Awaited<ReturnType<typeof opencodeRun>>, stage: string): void => {
-    const debug = `# OpenCode Debug — ${stage}\n\n` +
-      `exitCode: ${result.exitCode}\n\n` +
+  const dumpDiagnostics = (result: Awaited<ReturnType<typeof agentRun>>, stage: string): void => {
+    const debug = `# Agent Debug — ${stage}\n\n` +
+      `provider: ${result.provider}\nexitCode: ${result.exitCode}\n\n` +
       `## Raw output (${result.output.length} chars)\n\n\`\`\`\n${result.output}\n\`\`\`\n`;
     try {
       const debugPath = savePlan(debug, `plan-debug-${Date.now()}.md`, opts.config.outputDir);
@@ -395,19 +395,20 @@ async function generatePlan(
       console.log(chalk.yellow(`\nRetrying plan generation (attempt ${attempt + 1}/${MAX_RETRIES + 1}) — previous response was not a structured plan: ${lastValidation.reason}`));
     }
 
-    const result = await opencodeRun(prompt, {
-      model: opts.model ?? opts.config.opencodeModel,
-      timeout: 300000,
-    });
+    const provider = resolveProviderName(opts.config);
+    const result = await agentRun(prompt, { timeout: 300000 }, opts.config);
 
     const rawPlan = extractMarkdown(result);
 
     if (!rawPlan || rawPlan.length < 20) {
       if (result.exitCode !== 0) {
-        const hint = result.output.includes('401') || result.output.includes('No provider available')
+        const hint = provider === 'opencode' &&
+          (result.output.includes('401') || result.output.includes('No provider available'))
           ? '\n  Hint: OpenCode API auth failed. Check your API key or try again later.'
-          : '';
-        console.error(chalk.red(`OpenCode failed (exit ${result.exitCode})${hint}`));
+          : provider === 'api'
+            ? '\n  Hint: API request failed. Check AGENT_API_KEY / AGENT_API_BASE_URL or try again later.'
+            : '';
+        console.error(chalk.red(`Agent backend (${provider}) failed (exit ${result.exitCode})${hint}`));
         if (result.output.trim()) {
           console.log(chalk.gray('  Raw output preview:'));
           console.log(chalk.gray(result.output.slice(0, 800)));

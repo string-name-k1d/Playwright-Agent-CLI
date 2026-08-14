@@ -1,5 +1,5 @@
 ---
-description: Clean up generated artifacts and scratch files (run pw-cli-agent clean in the container).
+description: Clean up generated artifacts and scratch files (run the clean command in the container).
 agent: build
 ---
 

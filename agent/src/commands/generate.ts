@@ -3,7 +3,8 @@ import { readFileSync, readdirSync, writeFileSync, existsSync, statSync, mkdirSy
 import { join, basename } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { opencodeRun, extractStructuredOutput } from '../lib/opencode.js';
+import ts from 'typescript';
+import { agentRun, extractStructuredOutput, type AgentResult } from '../lib/agent-provider.js';
 import { saveTest, ensureArtifactsDir, readArtifact, extractCodeBlocks, saveExtractedTests, wrapInTest, getLatestFile, splitPlanTestSections } from '../lib/artifacts.js';
 import { generatorPrompt } from '../lib/prompt-templates.js';
 import { loadReferences, formatReferencesForPrompt } from '../lib/reference-loader.js';
@@ -12,7 +13,7 @@ import { Config, resolveProfile } from '../config.js';
 
 const execFileAsync = promisify(execFile);
 
-/** Default number of test cases to generate per opencode call. */
+/** Default number of test cases to generate per agent call. */
 export const DEFAULT_BATCH_SIZE = 5;
 
 /** Max attempts per batch; reasoning models occasionally spend the whole output budget on deliberation and emit no code, so retry with a "skip deliberation" nudge. */
@@ -63,7 +64,7 @@ export async function generateFromPlan(
 
   // Split the plan into test-case sections. When there is more than one case
   // and batching is enabled (or requested with a size), generate one file per
-  // batch. Each opencode request stays small: faster responses, fewer tokens,
+  // batch. Each agent request stays small: faster responses, fewer tokens,
   // and far less chance of the model going agentic and timing out.
   const { header, cases } = splitPlanTestSections(planContent);
   const doBatch = cases.length > 1 && (batchSize === undefined || batchSize > 1);
@@ -81,13 +82,16 @@ export async function generateFromPlan(
       }`;
       const prompt = generatorPrompt(subPlan, context, finalReference, note.trim());
       try {
-        const result = await opencodeRun(prompt, {
-          model: config.opencodeModel,
+        const result = await agentRun(prompt, {
           agent: resolveGeneratorAgent(),
           timeout: 600000,
           retries: 1,
-        });
+        }, config);
         const testCode = extractCodeFromResult(result);
+        const validationErr = validateGeneratedCode(testCode);
+        if (validationErr) {
+          throw new Error(`Generated code is incomplete/unparseable (${validationErr})`);
+        }
         const testPath = saveTest(wrapInTest(testCode, label), `${label}.spec.ts`, config.outputDir);
         console.log(chalk.green(`  → ${testPath}`));
         return testPath;
@@ -158,13 +162,34 @@ function resolveGeneratorAgent(): string | undefined {
   return undefined;
 }
 
-/** Extracts the largest fenced code block (or raw code fallback) from an opencode result. */
-function extractCodeFromResult(result: { output: string; exitCode: number }): string {
+/**
+ * Returns a description of the first TypeScript syntax error in generated code,
+ * or null when the code parses cleanly. Reasoning models sometimes spend their
+ * whole output budget mid-response and return truncated files (e.g. a trailing
+ * lone `await`) — such files pass "looks like code" checks but crash the whole
+ * Playwright run with a SyntaxError later, which the healer cannot recover.
+ * Detecting it here lets the batch retry with a "skip deliberation" nudge.
+ */
+function validateGeneratedCode(code: string): string | null {
+  if (!code.trim()) return 'empty output';
+  const result = ts.transpileModule(code, {
+    reportDiagnostics: true,
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+  });
+  const errors = (result.diagnostics ?? []).filter((d) => d.category === ts.DiagnosticCategory.Error);
+  if (errors.length === 0) return null;
+  const first = errors[0];
+  const line = (first.start ?? 0) > 0 ? code.slice(0, first.start).split('\n').length : 1;
+  return `syntax error at line ${line}: ${ts.flattenDiagnosticMessageText(first.messageText, '\n')}`;
+}
+
+/** Extracts the largest fenced code block (or raw code fallback) from an agent result. */
+function extractCodeFromResult(result: AgentResult): string {
   const output = extractStructuredOutput(result);
   const raw = typeof output === 'string' ? output : result.output;
 
   // Debug: log raw output length and first 200 chars
-  console.log(chalk.gray(`  OpenCode output: ${raw.length} chars`));
+  console.log(chalk.gray(`  ${result.provider} output: ${raw.length} chars`));
   console.log(chalk.gray(`  Preview: ${raw.slice(0, 200).replace(/\n/g, '\\n')}`));
 
   // Strategy 1: Extract the largest fenced code block
@@ -195,13 +220,13 @@ function extractCodeFromResult(result: { output: string; exitCode: number }): st
   }
 
   if (result.exitCode !== 0) {
-    throw new Error(`OpenCode generation failed (exit ${result.exitCode}): ${raw.slice(0, 500)}`);
+    throw new Error(`${result.provider} generation failed (exit ${result.exitCode}): ${raw.slice(0, 500)}`);
   }
 
   // Strategy 3: No code found at all
   const preview = raw.slice(0, 500).replace(/\n/g, '\n  ');
   throw new Error(
-    `No code found in OpenCode output (exit ${result.exitCode}).\n` +
+    `No code found in ${result.provider} output (exit ${result.exitCode}).\n` +
     `  Output preview:\n  ${preview}`
   );
 }
@@ -394,7 +419,7 @@ export async function generateCommand(opts: GenerateOptions): Promise<GenerateRe
         console.log('');
         return { files: saved };
       }
-      console.log(chalk.yellow('No code blocks found in plan — falling back to opencode generation\n'));
+      console.log(chalk.yellow('No code blocks found in plan — falling back to AI generation\n'));
     }
 
     const files = await generateFromPlan(planContent, opts.url, opts.config, referenceContent, undefined, opts.batchSize);

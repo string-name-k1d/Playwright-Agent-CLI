@@ -59,7 +59,7 @@ export function profileTree(opts: ProfileOptions): void {
     const page = getPageRecord(profile, opts.url!);
     if (!page) {
       console.log(chalk.yellow(`Page not profiled yet: ${normalizeUrl(opts.url)}`));
-      console.log(chalk.yellow('Run `pw-cli-agent explore --url <url>` to build the profile.'));
+      console.log(chalk.yellow('Run `pwcli explore --url <url>` to build the profile.'));
       return;
     }
     const tree = getPageTree(profile, opts.url!);
@@ -74,7 +74,7 @@ export function profileTree(opts: ProfileOptions): void {
   const snap = resolveFromSnapshot(opts.url, opts.config);
   if (!snap) {
     console.log(chalk.yellow(`No profile or snapshot found for ${opts.url}.`));
-    console.log(chalk.yellow('Run `pw-cli-agent explore --url <url>` to build the profile.'));
+    console.log(chalk.yellow('Run `pwcli explore --url <url>` to build the profile.'));
     return;
   }
   const tree = buildElementTree(snap.yaml);
@@ -113,7 +113,7 @@ export function profileQuery(query: string, url: string | undefined, opts: Profi
   const profile = url ? loadProfileFor(url, opts.config) : findHostProfile(opts.url, opts.config);
   if (!profile) {
     console.log(chalk.yellow(`No website profile found${url ? ` for ${url}` : ''}.`));
-    console.log(chalk.yellow('Run `pw-cli-agent explore` first to build one.'));
+    console.log(chalk.yellow('Run `pwcli explore` first to build one.'));
     return;
   }
   const results = resolveElement(profile, { query, url });
@@ -133,7 +133,7 @@ export function profileRef(ref: string, url: string | undefined, opts: ProfileOp
 export function profilePages(opts: ProfileOptions): void {
   const profile = opts.url ? findHostProfile(opts.url, opts.config) : listWebsiteProfiles(opts.config.outputDir)[0] ?? null;
   if (!profile) {
-    console.log(chalk.yellow('No website profiles found. Run `pw-cli-agent explore` first.'));
+    console.log(chalk.yellow('No website profiles found. Run `pwcli explore` first.'));
     return;
   }
   console.log(chalk.bold(`\nPages for ${profile.host}:`));
@@ -149,7 +149,7 @@ export function profilePages(opts: ProfileOptions): void {
 export function profileList(config: Config): void {
   const profiles = listWebsiteProfiles(config.outputDir);
   if (profiles.length === 0) {
-    console.log(chalk.yellow('No website profiles found. Run `pw-cli-agent explore` first.'));
+    console.log(chalk.yellow('No website profiles found. Run `pwcli explore` first.'));
     return;
   }
   console.log(chalk.bold(`\nWebsite profiles (${profiles.length}):`));
@@ -166,7 +166,7 @@ export function profileList(config: Config): void {
 export function profileMap(opts: ProfileOptions): void {
   const profile = opts.url ? findHostProfile(opts.url, opts.config) : listWebsiteProfiles(opts.config.outputDir)[0] ?? null;
   if (!profile) {
-    console.log(chalk.yellow('No website profiles found. Run `pw-cli-agent explore` first.'));
+    console.log(chalk.yellow('No website profiles found. Run `pwcli explore` first.'));
     return;
   }
   const map = writeSiteMap(profile, opts.config.outputDir);

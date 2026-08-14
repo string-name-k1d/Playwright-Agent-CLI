@@ -224,7 +224,7 @@ export async function importSessionCommand(opts: ImportSessionOptions): Promise<
     }
 
     console.log(chalk.gray('\n  Other commands auto-detect ./auth-profile — no --profile needed.'));
-    console.log(chalk.gray('  Verify with: pw-cli-agent check --url <target>\n'));
+    console.log(chalk.gray('  Verify with: pwcli check --url <target>\n'));
   } catch (err: any) {
     console.error(chalk.red(`Import failed: ${err.message}`));
     process.exit(1);

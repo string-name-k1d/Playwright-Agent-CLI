@@ -5,5 +5,4 @@ dist
 .env.*
 .bash_aliases
 docker-compose.yml
-test_command.sh
 shared

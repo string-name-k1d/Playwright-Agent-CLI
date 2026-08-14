@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { exploreCommand } from './explore.js';
 import { savePlan, ensureArtifactsDir, getLatestFile } from '../lib/artifacts.js';
 import { healerPlanPrompt } from '../lib/prompt-templates.js';
-import { opencodeRun, extractMarkdown } from '../lib/opencode.js';
+import { agentRun, extractMarkdown } from '../lib/agent-provider.js';
 import { Config } from '../config.js';
 import { getLatestEntryForUrl, searchExploreEntries, getSnapshotContent, type ExploreEntry } from '../lib/explore-registry.js';
 
@@ -346,16 +346,13 @@ export async function healCommand(opts: HealOptions): Promise<HealResult> {
       : allSnapshotContents.map((s, i) => `### Snapshot ${i + 1}\n\n${s}`).join('\n\n---\n\n');
 
     const prompt = healerPlanPrompt(combinedSnapshots, failureContext, originalPlan);
-    const result = await opencodeRun(prompt, {
-      model: opts.model ?? opts.config.opencodeModel,
-      timeout: 300000,
-    });
+    const result = await agentRun(prompt, { timeout: 300000 }, opts.config);
 
     plan = extractMarkdown(result);
 
     if (!plan || plan.length < 20) {
       if (result.exitCode !== 0) {
-        log(chalk.red(`  OpenCode failed (exit ${result.exitCode})`));
+        log(chalk.red(`  Agent backend (${result.provider}) failed (exit ${result.exitCode})`));
       } else {
         log(chalk.red('  Healing plan output too short or empty'));
       }

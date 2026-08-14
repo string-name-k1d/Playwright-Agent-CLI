@@ -102,21 +102,136 @@ export interface ExtractedCode {
   testId?: string;
 }
 
-const SCREENSHOT_HOOK = `
-test.afterEach(async ({ page }, testInfo) => {
-  const { mkdirSync } = await import('node:fs');
-  const dir = testInfo.outputDir + '/screenshots';
-  try { mkdirSync(dir, { recursive: true }); } catch {}
-  const name = testInfo.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-  const suffix = testInfo.status === 'passed' ? 'pass' : 'fail';
-  try {
-    await page.screenshot({ path: dir + '/' + name + '_' + suffix + '.png', fullPage: true });
-  } catch {
-    // page may be closed — try without fullPage
-    try { await page.screenshot({ path: dir + '/' + name + '_' + suffix + '.png' }); } catch {}
+const FORM_HELPERS_IMPORT =
+  "import { revealButton, clickButton, addSection, openAdvancedOptions, expectBlockLabel } from '../../templates/form-helpers';";
+// The screenshot hook must be INLINE per spec file: a shared hook module does
+// not work when several spec files run in the same worker — Node caches the
+// module, so only the first file registers test.afterEach.
+const SCREENSHOT_HOOK_SNIPPET = [
+  "test.afterEach(async ({ page }, testInfo) => {",
+  "  const { mkdirSync } = await import('node:fs');",
+  "  const { join } = await import('node:path');",
+  "  const dir = process.env.SCREENSHOT_OUTPUT || join(process.cwd(), 'run', 'screenshots');",
+  "  try { mkdirSync(dir, { recursive: true }); } catch {}",
+  "  const name = testInfo.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();",
+  "  const suffix = testInfo.status === 'passed' ? 'pass' : 'fail';",
+  "  await page.screenshot({ path: join(dir, name + '_' + suffix + '.png'), fullPage: true }).catch(() => {});",
+  "});",
+  "",
+].join('\n');
+const HELPER_NAMES = ['revealButton', 'clickButton', 'addSection', 'openAdvancedOptions', 'expectBlockLabel'] as const;
+
+/**
+ * Removes a top-level `function <name>` (optionally `async`/`export`) declaration
+ * from generated code, matching braces so nested blocks are handled.
+ */
+function stripFunctionHelper(code: string, name: string): string {
+  const regex = new RegExp(`(?:export\\s+)?(?:async\\s+)?function\\s+${name}\\b`);
+  let m = regex.exec(code);
+  while (m) {
+    const open = code.indexOf('(', m.index);
+    if (open === -1) break;
+    let depth = 0;
+    let end = open;
+    for (; end < code.length; end++) {
+      if (code[end] === '(') depth++;
+      else if (code[end] === ')') { depth--; if (depth === 0) break; }
+    }
+    const bs = code.indexOf('{', end);
+    if (bs === -1) break;
+    depth = 0;
+    let be = bs;
+    for (; be < code.length; be++) {
+      if (code[be] === '{') depth++;
+      else if (code[be] === '}') { depth--; if (depth === 0) break; }
+    }
+    let cut = be + 1;
+    if (code[cut] === '\r' || code[cut] === '\n') cut++;
+    code = code.slice(0, m.index) + code.slice(cut);
+    m = regex.exec(code);
   }
-});
-`;
+  return code;
+}
+
+/**
+ * Removes a top-level `const <name> = ... => { ... }` helper definition,
+ * matching the arrow function body's braces.
+ */
+function stripConstHelper(code: string, name: string): string {
+  const regex = new RegExp(`\\bconst\\s+${name}\\s*=`);
+  let m = regex.exec(code);
+  while (m) {
+    const arrow = code.indexOf('=>', m.index);
+    if (arrow === -1) break;
+    const bs = code.indexOf('{', arrow);
+    if (bs === -1) break;
+    let depth = 0;
+    let be = bs;
+    for (; be < code.length; be++) {
+      if (code[be] === '{') depth++;
+      else if (code[be] === '}') { depth--; if (depth === 0) break; }
+    }
+    let cut = be + 1;
+    while (cut < code.length && /\s/.test(code[cut])) cut++;
+    if (code[cut] === ';') cut++;
+    if (code[cut] === '\r' || code[cut] === '\n') cut++;
+    code = code.slice(0, m.index) + code.slice(cut);
+    m = regex.exec(code);
+  }
+  return code;
+}
+
+/**
+ * Removes any inline `test.afterEach(...)` registration (e.g. the boilerplate
+ * screenshot hook) from generated code — the canonical inline screenshot hook
+ * is injected instead.
+ */
+function stripInlineAfterEach(code: string): string {
+  const marker = 'test.afterEach';
+  let idx = code.indexOf(marker);
+  while (idx !== -1) {
+    const open = code.indexOf('(', idx);
+    if (open === -1) break;
+    let depth = 0;
+    let end = open;
+    for (; end < code.length; end++) {
+      if (code[end] === '(') depth++;
+      else if (code[end] === ')') { depth--; if (depth === 0) break; }
+    }
+    if (depth !== 0) break;
+    let cut = end + 1;
+    while (cut < code.length && /\s/.test(code[cut])) cut++;
+    if (code[cut] === ';') cut++;
+    code = code.slice(0, idx) + code.slice(cut);
+    idx = code.indexOf(marker);
+  }
+  return code;
+}
+
+/**
+ * Ensures generated specs import the shared form-helpers module (when the code
+ * uses any helper name) and always inline a per-file screenshot `test.afterEach`
+ * hook. Relative paths resolve for specs saved directly under artifacts/tests/.
+ */
+function injectTemplateImports(code: string): string {
+  const usesHelpers = HELPER_NAMES.some((n) => new RegExp(`\\b${n}\\s*\\(`).test(code));
+  const hasHelpersImport = /templates\/form-helpers/.test(code);
+  // Drop any stale shared screenshot-hook import; the inline hook below is the
+  // only reliable form (see SCREENSHOT_HOOK_SNIPPET note).
+  code = code.replace(
+    /^[ \t]*import[ \t]+['"]\.\.\/\.\.\/templates\/screenshot-hook['"];[ \t]*\r?\n?/gm,
+    '',
+  );
+  const inserts: string[] = [];
+  if (usesHelpers && !hasHelpersImport) inserts.push(FORM_HELPERS_IMPORT);
+  inserts.push(SCREENSHOT_HOOK_SNIPPET);
+
+  const lines = code.split('\n');
+  let idx = 0;
+  while (idx < lines.length && /^\s*import\s/.test(lines[idx])) idx++;
+  lines.splice(idx, 0, ...inserts);
+  return lines.join('\n');
+}
 
 function looksLikeCode(code: string): boolean {
   const codePatterns = [
@@ -180,25 +295,32 @@ export function wrapInTest(code: string, testName: string, url?: string): string
   code = neutralizeSerialMode(code);
   const hasImport = /import.*@playwright\/test/.test(code);
   const hasTest = /\b(?:test|it)\s*\(/.test(code);
-  const hasAfterEach = /test\.afterEach/.test(code);
 
   if (!hasImport && !hasTest && !looksLikeCode(code)) {
     throw new Error('Generated content is prose, not code — cannot wrap');
   }
 
-  const hook = hasAfterEach ? '' : SCREENSHOT_HOOK;
+  // Remove inline boilerplate (shared helper functions + screenshot afterEach
+  // hook) and replace it with imports of the shared templates modules so the
+  // helper logic and screenshot hook live in exactly one place.
+  for (const name of HELPER_NAMES) {
+    code = stripFunctionHelper(code, name);
+    code = stripConstHelper(code, name);
+  }
+  code = stripInlineAfterEach(code);
+  code = injectTemplateImports(code);
 
   if (hasImport && hasTest) {
     let result = injectBaseUrl(code);
     result = injectNavigation(result, url);
-    return result + hook;
+    return result;
   }
 
   const importLine = hasImport ? '' : "import { test, expect } from '@playwright/test';\n\n";
   let testBlock = hasTest ? code : `test('${testName.replace(/'/g, "\\'")}', async ({ page }) => {\n${code}\n});`;
   testBlock = injectNavigation(testBlock, url);
 
-  return importLine + injectBaseUrl(testBlock) + hook;
+  return importLine + injectBaseUrl(testBlock);
 }
 
 // ── Plan validation ───────────────────────────────────────────────
@@ -456,7 +578,12 @@ export function splitPlanTestSections(markdown: string): { header: string; cases
   };
 
   for (const line of lines) {
-    const heading = line.match(/^#{1,6}\s*TC-(\d+)\s*[:：]?\s*(.*)$/i);
+    // Match both `### TC-1: name` markdown headings and bold `**TC-01. name**`
+    // case titles (bold titles are the format emitted by the planner when the
+    // plan body uses `**TC-<n>. <slug>**` lines under area headings).
+    const heading =
+      line.match(/^#{1,6}\s*TC-(\d+)\s*[:：]?\s*(.*)$/i) ??
+      line.match(/^\*\*\s*TC-(\d+)\s*[.:：]?\s*(.*?)\s*\*\*$/i);
     if (heading) {
       finalize();
       current = {
