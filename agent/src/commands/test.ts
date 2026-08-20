@@ -140,7 +140,7 @@ export function ensurePlaywrightConfig(
     useOptions.httpCredentials = httpCredentials;
   }
 
-  // Resolve targetUrl: explicit param → existing config → default
+  // Resolve targetUrl: explicit param → existing config → env
   const resolvedUrl = targetUrl || (() => {
     if (existsSync(PLAYWRIGHT_CONFIG)) {
       try {
@@ -149,9 +149,9 @@ export function ensurePlaywrightConfig(
         if (match) return match[1];
       } catch {}
     }
-    return 'http://mtpc_test';
+    return process.env.TARGET_URL;
   })();
-  useOptions.baseURL = resolvedUrl;
+  if (resolvedUrl) useOptions.baseURL = resolvedUrl;
 
   if (storageState) {
     const absPath = storageState.startsWith('/') ? storageState : join(process.cwd(), storageState);
@@ -189,7 +189,9 @@ export function ensurePlaywrightConfig(
   lines.push('');
 
   writeFileSync(PLAYWRIGHT_CONFIG, lines.join('\n'), 'utf-8');
-  console.log(chalk.gray(`  Config: playwright.config.ts (baseURL=${resolvedUrl}${storageState ? ', storageState set' : ''})`));
+  console.log(chalk.gray(
+    `  Config: playwright.config.ts (${resolvedUrl ? `baseURL=${resolvedUrl}` : 'baseURL unset'}${storageState ? ', storageState set' : ''})`
+  ));
 }
 
 export function cleanupRunDir(): void {

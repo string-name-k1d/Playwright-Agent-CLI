@@ -21,11 +21,12 @@ export async function clickButton(page: Page, name: string): Promise<void> {
   await page.getByRole('button', { name }).first().click();
 }
 
-export async function addBlock(page: Page, name: string, labelText: string): Promise<void> {
+export async function addBlock(page: Page, name: string, labelText?: string): Promise<void> {
   // Block adds are AJAX-driven and occasionally swallow the click; retry until
   // the block label appears in the form.
   for (let attempt = 0; attempt < 3; attempt++) {
     await clickButton(page, name);
+    if (!labelText) { await page.waitForTimeout(2000); return; }
     try {
       await expectBlockLabel(page, labelText);
       return;
@@ -33,7 +34,7 @@ export async function addBlock(page: Page, name: string, labelText: string): Pro
       await page.waitForTimeout(1200);
     }
   }
-  await expectBlockLabel(page, labelText);
+  if (labelText) await expectBlockLabel(page, labelText);
 }
 
 export async function addSection(page: Page, columns: string): Promise<void> {

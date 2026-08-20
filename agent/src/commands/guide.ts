@@ -187,7 +187,11 @@ export async function guideCommand(opts: GuideOptions): Promise<void> {
   console.log(chalk.cyan('Launching browser...'));
   const session = new PlaywrightSession();
   try {
-    await session.launch(url, { profile, httpCredentials: httpCredentialsFor(opts.config) });
+    await session.launch(url, {
+      profile,
+      httpCredentials: httpCredentialsFor(opts.config),
+      siteAdapter: opts.config.siteAdapter,
+    });
   } catch (err: any) {
     console.error(chalk.red(`Failed to launch browser: ${err.message}`));
     process.exit(1);

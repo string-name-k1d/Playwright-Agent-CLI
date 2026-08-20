@@ -3,6 +3,7 @@ import { chromium, type Browser, type BrowserContext, type Page, type BrowserCon
 import { writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ElementInfo } from './snapshot-parser.js';
+import { isDrupalAdapter, type SiteAdapterName } from './site-adapter.js';
 
 interface CdpAxNode {
   nodeId: string;
@@ -71,6 +72,7 @@ export class PlaywrightSession {
   private _visitedPages: TrackedPage[] = [];
   private _domCache = new Map<string, DomInfo[]>();
   private _occCounters = new Map<string, number>();
+  private siteAdapter: SiteAdapterName = 'generic';
 
   get visitedPages(): TrackedPage[] {
     return this._visitedPages;
@@ -88,8 +90,10 @@ export class PlaywrightSession {
       headless?: boolean;
       httpCredentials?: { username: string; password: string };
       ignoreHTTPSErrors?: boolean;
+      siteAdapter?: SiteAdapterName;
     } = {},
   ): Promise<void> {
+    this.siteAdapter = opts.siteAdapter ?? 'generic';
     const contextOptions: BrowserContextOptions = {
       // Private/test sites (UAT, internal hosts) often use self-signed or
       // expired TLS certs — ignore HTTPS errors by default.
@@ -224,6 +228,7 @@ export class PlaywrightSession {
    */
   async prepareForExploration(): Promise<void> {
     if (!this.page) throw new Error('Session not started.');
+    if (!isDrupalAdapter(this.siteAdapter)) return;
     try {
       // Only auto-add a section on node-add forms; never modify an existing node
       // during re-exploration (edit pages: /node/<id>/edit/...).
@@ -251,6 +256,7 @@ export class PlaywrightSession {
    */
   async expandReveals(): Promise<void> {
     if (!this.page) throw new Error('Session not started.');
+    if (!isDrupalAdapter(this.siteAdapter)) return;
     for (let pass = 0; pass < 5; pass++) {
       const clicked = await this.page.evaluate(() => {
         let n = 0;

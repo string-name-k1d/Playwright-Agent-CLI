@@ -9,15 +9,19 @@ import { saveTest, ensureArtifactsDir, readArtifact, extractCodeBlocks, saveExtr
 import { generatorPrompt } from '../lib/prompt-templates.js';
 import { loadReferences, formatReferencesForPrompt } from '../lib/reference-loader.js';
 import { annotateCodegenSpec } from '../lib/codegen-annotator.js';
+import { intFromEnv, truncateForPrompt } from '../lib/prompt-budget.js';
 import { Config, resolveProfile } from '../config.js';
 
 const execFileAsync = promisify(execFile);
 
-/** Default number of test cases to generate per agent call. */
-export const DEFAULT_BATCH_SIZE = 5;
+/** Default number of test cases to generate per agent call. Small batches keep per-batch prompts short enough for reasoning models (big-pickle) to emit code before their output-token budget runs out. */
+export const DEFAULT_BATCH_SIZE = 3;
 
 /** Max attempts per batch; reasoning models occasionally spend the whole output budget on deliberation and emit no code, so retry with a "skip deliberation" nudge. */
 export const GENERATION_ATTEMPTS = 3;
+const GENERATE_MAX_PROMPT_CHARS = intFromEnv('PW_CLI_GENERATE_MAX_PROMPT_CHARS', 180_000);
+const GENERATE_MAX_REF_CHARS = intFromEnv('PW_CLI_GENERATE_MAX_REFERENCE_CHARS', 50_000);
+const MAX_CODEGEN_REFERENCE_FILES = intFromEnv('PW_CLI_CODEGEN_REFERENCE_MAX_FILES', 3);
 
 /** opencode agent used for generation (non-agentic, code-only output). */
 const GENERATOR_AGENT = process.env.OPENCODE_AGENT || 'codegen';
@@ -80,7 +84,11 @@ export async function generateFromPlan(
           ? '\n\nRETRY: Your previous attempt produced no code — all output tokens were spent on internal deliberation before the response was cut off. This time DO NOT deliberate. Immediately emit the complete Playwright test file: imports, storageState, one test() per test case, and the afterEach screenshot hook. No commentary, no explanations, no markdown fences, code only.'
           : ''
       }`;
-      const prompt = generatorPrompt(subPlan, context, finalReference, note.trim());
+      const prompt = truncateForPrompt(
+        generatorPrompt(subPlan, context, finalReference, note.trim()),
+        GENERATE_MAX_PROMPT_CHARS,
+        'generator prompt',
+      );
       try {
         const result = await agentRun(prompt, {
           agent: resolveGeneratorAgent(),
@@ -322,6 +330,7 @@ function loadCodegenReferences(outputDir: string, extraFile?: string): { text: s
   const inDir = new Set(files);
   if (extraName && !inDir.has(extraName)) files.unshift(extraName);
   if (files.length === 0) return { text: '', count: 0 };
+  files = files.slice(-MAX_CODEGEN_REFERENCE_FILES);
 
   const sections = [
     'CODEGEN-RECORDED SCRIPTS (recorded via Playwright codegen against the live site):',
@@ -346,7 +355,10 @@ function loadCodegenReferences(outputDir: string, extraFile?: string): { text: s
     sections.push('');
     count++;
   }
-  return { text: sections.join('\n'), count };
+  return {
+    text: truncateForPrompt(sections.join('\n'), GENERATE_MAX_REF_CHARS, 'codegen references'),
+    count,
+  };
 }
 
 /**
@@ -383,7 +395,11 @@ export async function generateCommand(opts: GenerateOptions): Promise<GenerateRe
       for (const ref of references) {
         console.log(chalk.gray(`  - ${ref.name} (${ref.steps.length} steps, ${ref.screenshots.length} screenshots)`));
       }
-      referenceContent = formatReferencesForPrompt(references);
+      referenceContent = truncateForPrompt(
+        formatReferencesForPrompt(references),
+        GENERATE_MAX_REF_CHARS,
+        'user references',
+      );
     } else {
       console.log(chalk.yellow(`No references found at: ${opts.reference}`));
     }

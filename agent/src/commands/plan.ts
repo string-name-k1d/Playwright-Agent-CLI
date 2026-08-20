@@ -21,9 +21,13 @@ import { getElementSummary } from '../lib/snapshot-parser.js';
 import { loadReferences, formatReferencesForPrompt, type TestReference } from '../lib/reference-loader.js';
 import { hostFromUrl, loadWebsiteProfileForHost, listWebsiteProfiles } from '../lib/website-profile.js';
 import { siteMapContextForPrompt } from '../lib/site-map.js';
+import { intFromEnv, truncateForPrompt } from '../lib/prompt-budget.js';
 import { Config } from '../config.js';
 
 const MAX_EXPLORE_DEPTH = 3;
+const PLAN_MAX_PROMPT_CHARS = intFromEnv('PW_CLI_PLAN_MAX_PROMPT_CHARS', 180_000);
+const PLAN_MAX_REF_CHARS = intFromEnv('PW_CLI_PLAN_MAX_REFERENCE_CHARS', 40_000);
+const PLAN_MAX_SNAPSHOTS = intFromEnv('PW_CLI_PLAN_MAX_SNAPSHOTS', 3);
 
 function extractExploreUrls(planContent: string): string[] {
   const urls: string[] = [];
@@ -216,7 +220,11 @@ export async function planCommand(opts: PlanOptions): Promise<void> {
       for (const ref of references) {
         console.log(chalk.gray(`  - ${ref.name} (${ref.steps.length} steps, ${ref.screenshots.length} screenshots)`));
       }
-      referenceContent = formatReferencesForPrompt(references);
+      referenceContent = truncateForPrompt(
+        formatReferencesForPrompt(references),
+        PLAN_MAX_REF_CHARS,
+        'reference context',
+      );
     } else {
       console.log(chalk.yellow(`No references found at: ${opts.reference}`));
     }
@@ -353,15 +361,28 @@ async function generatePlan(
   opts: PlanOptions,
   extraContext?: string
 ): Promise<string> {
+  const snapshots = [
+    allSnapshots[0],
+    ...allSnapshots.slice(1, Math.max(1, PLAN_MAX_SNAPSHOTS)),
+  ].filter(Boolean);
+  const omittedSnapshots = Math.max(0, allSnapshots.length - snapshots.length);
+
   // Build context: element summaries + full snapshots
   const contextParts: string[] = [];
-  for (let i = 0; i < allSnapshots.length; i++) {
+  for (let i = 0; i < snapshots.length; i++) {
     const parsed = await import('../lib/snapshot-parser.js');
-    const elements = parsed.parseSnapshotElements(allSnapshots[i]);
+    const elements = parsed.parseSnapshotElements(snapshots[i]);
     const summary = parsed.getElementSummary(elements);
     const label = i === 0 ? 'PRIMARY PAGE' : `PAGE ${i + 1}`;
     if (summary) contextParts.push(`${label} ELEMENT MAP:\n${summary}`);
-    contextParts.push(`${label} SNAPSHOT:\n${allSnapshots[i]}`);
+    if (i === 0) {
+      contextParts.push(`${label} SNAPSHOT:\n${snapshots[i]}`);
+    } else {
+      contextParts.push(`${label} SNAPSHOT: omitted for token budget (summary retained)`); 
+    }
+  }
+  if (omittedSnapshots > 0) {
+    contextParts.push(`\nTOKEN BUDGET: omitted ${omittedSnapshots} additional snapshot(s).`);
   }
 
   const allEntries = getExploreEntries(opts.config.outputDir);
@@ -371,8 +392,12 @@ async function generatePlan(
 
   if (extraContext) contextParts.push(extraContext);
 
-  const context = contextParts.join('\n\n');
-  const prompt = plannerPrompt(allSnapshots[0], context, requirements, referenceContent);
+  const context = truncateForPrompt(contextParts.join('\n\n'), PLAN_MAX_PROMPT_CHARS, 'planner context');
+  const prompt = truncateForPrompt(
+    plannerPrompt(snapshots[0], context, requirements, referenceContent),
+    PLAN_MAX_PROMPT_CHARS,
+    'planner prompt',
+  );
 
   const MAX_RETRIES = 2;
   let plan = '';

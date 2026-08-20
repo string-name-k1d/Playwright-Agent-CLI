@@ -10,7 +10,7 @@ Rules that apply to every change made in this repository.
 
 ## Agents
 
-- `.opencode/agent/codegen.md` defines a non-agentic, code-only opencode agent used by `node dist/index.js generate` (and autorun/heal generation steps) via `opencode run --agent codegen`. It denies all tools and must stay that way — the default `build` agent goes agentic on large generation prompts and times out. Generation runs with `--batch-size` (default 5 test cases per opencode call; keep it small for reasoning models like `big-pickle`, whose internal reasoning consumes the output-token budget).
+- `.opencode/agent/codegen.md` defines a non-agentic, code-only opencode agent used by `node dist/index.js generate` (and autorun/heal generation steps) via `opencode run --agent codegen`. It denies all tools and must stay that way — the default `build` agent goes agentic on large generation prompts and times out. The agent is configured with `variant: minimal` to reduce reasoning-token consumption for reasoning models like `big-pickle`. Generation runs with `--batch-size` (default 3 test cases per opencode call — small batches keep per-batch prompts short enough for reasoning models to emit code before their output-token budget runs out).
 
 ## Build & verify
 

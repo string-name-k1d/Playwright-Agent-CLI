@@ -34,7 +34,8 @@ program
   .name('pw-cli-agent')
   .description('Playwright CLI + AI agent for automated web testing (opencode CLI or OpenAI-compatible APIs)')
   .version('1.0.0')
-  .option('--config <path>', 'Path to config file');
+  .option('--config <path>', 'Path to config file')
+  .option('--site-adapter <adapter>', 'Site behavior adapter: generic or drupal');
 
 program
   .command('check')
@@ -44,7 +45,7 @@ program
   .option('--profile <path>', 'Persistent browser profile for saved login state')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({ storageState: opts.profile }, parent.config);
+    const config = resolveConfig({ storageState: opts.profile, siteAdapter: parent.siteAdapter }, parent.config);
     const url = validateUrl(opts.url ?? config.targetUrl, '--url');
     await checkCommand({ url, screenshot: opts.screenshot, profile: opts.profile, config });
   });
@@ -55,12 +56,12 @@ program
   .option('--url <url>', 'Target URL (falls back to TARGET_URL env / config)')
   .option('--user <user>', 'Drupal username to generate ULI for (default: admin)')
   .option('--uli <url>', 'Direct one-time login URL (skips drush generation)')
-  .option('--drush-cmd <cmd>', 'Drush command prefix', 'docker exec mtpc_test drush')
+  .option('--drush-cmd <cmd>', 'Drush command prefix (required with --user)')
   .option('--headed', 'Show browser window')
   .option('--profile <path>', 'Browser profile directory to save (default: ./auth-profile)')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({ headed: opts.headed, storageState: opts.profile }, parent.config);
+    const config = resolveConfig({ headed: opts.headed, storageState: opts.profile, siteAdapter: parent.siteAdapter }, parent.config);
     const url = validateUrl(opts.url ?? config.targetUrl, '--url');
     const uli = validateUrl(opts.uli, '--uli');
     await loginCommand({
@@ -84,7 +85,7 @@ program
   .option('--profile <path>', 'Browser profile directory to save (default: ./auth-profile)')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({ storageState: opts.profile }, parent.config);
+    const config = resolveConfig({ storageState: opts.profile, siteAdapter: parent.siteAdapter }, parent.config);
     const url = validateUrl(opts.url ?? config.targetUrl, '--url');
     const cookiesFile = validatePath(opts.cookies, '--cookies');
     await importSessionCommand({
@@ -110,7 +111,7 @@ program
   .option('--profile <path>', 'Persistent browser profile for saved login state')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({ headed: opts.headed, storageState: opts.profile }, parent.config);
+    const config = resolveConfig({ headed: opts.headed, storageState: opts.profile, siteAdapter: parent.siteAdapter }, parent.config);
     const url = validateUrl(opts.url ?? config.targetUrl, '--url');
     const depth = validateCount(opts.depth, '--depth');
 
@@ -149,7 +150,7 @@ program
   .option('--ui-port <port>', 'Port to serve the UI panel on (default: 8123; 0 = any free port)')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({ storageState: opts.profile }, parent.config);
+    const config = resolveConfig({ storageState: opts.profile, siteAdapter: parent.siteAdapter }, parent.config);
     validatePath(opts.execute, '--execute', { fileOnly: false, allowGlob: true });
     const url = validateUrl(opts.url ?? config.targetUrl, '--url');
     const uiPort = opts.uiPort !== undefined ? validateCount(parseInt(opts.uiPort, 10), '--ui-port') : undefined;
@@ -175,7 +176,7 @@ profileCmd
   .option('--include-text', 'Include text nodes in the tree')
   .action(async (url, opts) => {
     const parent = program.opts();
-    const config = resolveConfig({}, parent.config);
+    const config = resolveConfig({ siteAdapter: parent.siteAdapter }, parent.config);
     profileTree({ url: validateUrl(url ?? opts.url ?? config.targetUrl, '--url'), includeText: opts.includeText, config });
   });
 
@@ -186,7 +187,7 @@ profileCmd
   .argument('[url]', 'Restrict results to a page URL')
   .action(async (query, url, opts) => {
     const parent = program.opts();
-    const config = resolveConfig({}, parent.config);
+    const config = resolveConfig({ siteAdapter: parent.siteAdapter }, parent.config);
     profileQuery(query, url, { url: validateUrl(url ?? opts.url ?? config.targetUrl, '--url'), config });
   });
 
@@ -197,7 +198,7 @@ profileCmd
   .argument('[url]', 'Restrict results to a page URL')
   .action(async (ref, url, opts) => {
     const parent = program.opts();
-    const config = resolveConfig({}, parent.config);
+    const config = resolveConfig({ siteAdapter: parent.siteAdapter }, parent.config);
     profileRef(ref, url, { url: validateUrl(url ?? opts.url ?? config.targetUrl, '--url'), config });
   });
 
@@ -207,7 +208,7 @@ profileCmd
   .argument('[url]', 'Origin URL (defaults to first profile)')
   .action(async (url, opts) => {
     const parent = program.opts();
-    const config = resolveConfig({}, parent.config);
+    const config = resolveConfig({ siteAdapter: parent.siteAdapter }, parent.config);
     profilePages({ url: validateUrl(url ?? opts.url ?? config.targetUrl, '--url'), config });
   });
 
@@ -216,7 +217,7 @@ profileCmd
   .description('List all website profiles')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({}, parent.config);
+    const config = resolveConfig({ siteAdapter: parent.siteAdapter }, parent.config);
     profileList(config);
   });
 
@@ -226,7 +227,7 @@ profileCmd
   .argument('[url]', 'Origin URL (defaults to first profile)')
   .action(async (url, opts) => {
     const parent = program.opts();
-    const config = resolveConfig({}, parent.config);
+    const config = resolveConfig({ siteAdapter: parent.siteAdapter }, parent.config);
     profileMap({ url: validateUrl(url ?? opts.url ?? config.targetUrl, '--url'), config });
   });
 
@@ -244,7 +245,7 @@ program
   .option('--reference <path>', 'User test procedures/screenshots directory or file')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({ opencodeModel: opts.model }, parent.config);
+    const config = resolveConfig({ opencodeModel: opts.model, siteAdapter: parent.siteAdapter }, parent.config);
     validatePath(opts.snapshot, '--snapshot');
     validatePath(opts.promptFile, '--prompt-file');
     validatePath(opts.reference, '--reference', { fileOnly: false });
@@ -274,7 +275,7 @@ program
   .option('--profile <path>', 'Browser profile for auth state (auto-detects ./auth-profile)')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({ headed: opts.headed }, parent.config);
+    const config = resolveConfig({ headed: opts.headed, siteAdapter: parent.siteAdapter }, parent.config);
     if (!opts.execute) {
       fail('--execute <file> is required');
     }
@@ -308,7 +309,7 @@ program
   .option('--batch-size <N>', `Test cases per generation batch (default: ${DEFAULT_BATCH_SIZE}; 1 = single request)`, parseInt)
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({ headed: opts.headed, storageState: opts.profile }, parent.config);
+    const config = resolveConfig({ headed: opts.headed, storageState: opts.profile, siteAdapter: parent.siteAdapter }, parent.config);
     if (!opts.plan && !opts.codegen) {
       fail('specify --plan <file> or --codegen');
     }
@@ -332,12 +333,12 @@ program
 program
   .command('report')
   .description('Generate summary report from artifacts')
-  .option('--format <fmt>', 'Output format: md or html', 'md')
+  .option('--format <fmt>', 'Output format: md, html, or json', 'md')
   .option('--output <file>', 'Custom output path')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({}, parent.config);
-    validateChoice(opts.format, '--format', ['md', 'html']);
+    const config = resolveConfig({ siteAdapter: parent.siteAdapter }, parent.config);
+    validateChoice(opts.format, '--format', ['md', 'html', 'json']);
     await reportCommand({
       format: opts.format,
       output: opts.output,
@@ -379,7 +380,7 @@ program
   .option('--codegen [file]', 'Record a one-time codegen flow (element-ref annotated) before planning, or pass an existing codegen/exploration file (e.g. --codegen ./artifacts/tests/codegen-xxx.spec.ts) to use as reference material')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({ headed: opts.headed, storageState: opts.profile }, parent.config);
+    const config = resolveConfig({ headed: opts.headed, storageState: opts.profile, siteAdapter: parent.siteAdapter }, parent.config);
     const url = validateUrl(opts.url ?? config.targetUrl, '--url');
     if (!url && !opts.resume) {
       fail('--url is required (or set TARGET_URL in .env)');
@@ -417,7 +418,7 @@ program
   .option('--profile <path>', 'Persistent browser profile for saved login state')
   .action(async (opts) => {
     const parent = program.opts();
-    const config = resolveConfig({ headed: opts.headed, opencodeModel: opts.model, storageState: opts.profile }, parent.config);
+    const config = resolveConfig({ headed: opts.headed, opencodeModel: opts.model, storageState: opts.profile, siteAdapter: parent.siteAdapter }, parent.config);
     const url = validateUrl(opts.url ?? config.targetUrl, '--url');
     await healCommand({
       url,

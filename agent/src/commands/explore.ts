@@ -42,6 +42,7 @@ export async function exploreCommand(opts: ExploreOptions): Promise<ExploreResul
       profile,
       headless: !(opts.headed ?? opts.config.headed),
       httpCredentials: httpCredentialsFor(opts.config),
+      siteAdapter: opts.config.siteAdapter,
     });
     console.log(chalk.green('Browser opened'));
 

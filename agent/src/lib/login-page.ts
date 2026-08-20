@@ -14,7 +14,7 @@
 export function looksLikeLoginPage(url: string): boolean {
   if (!url) return false;
   const u = url.toLowerCase();
-  if (u.includes('shib.ust.hk') || u.includes('shibboleth')) return true;
+  if (u.includes('shibboleth')) return true;
   try {
     const parsed = new URL(url);
     const host = parsed.hostname.toLowerCase();

@@ -103,7 +103,7 @@ export interface ExtractedCode {
 }
 
 const FORM_HELPERS_IMPORT =
-  "import { revealButton, clickButton, addSection, openAdvancedOptions, expectBlockLabel } from '../../templates/form-helpers';";
+  "import { revealButton, clickButton, addSection, openAdvancedOptions, expectBlockLabel, publishPage, addBlock } from '../../templates/form-helpers';";
 // The screenshot hook must be INLINE per spec file: a shared hook module does
 // not work when several spec files run in the same worker — Node caches the
 // module, so only the first file registers test.afterEach.
@@ -119,7 +119,7 @@ const SCREENSHOT_HOOK_SNIPPET = [
   "});",
   "",
 ].join('\n');
-const HELPER_NAMES = ['revealButton', 'clickButton', 'addSection', 'openAdvancedOptions', 'expectBlockLabel'] as const;
+const HELPER_NAMES = ['revealButton', 'clickButton', 'addSection', 'openAdvancedOptions', 'expectBlockLabel', 'publishPage', 'addBlock'] as const;
 
 /**
  * Removes a top-level `function <name>` (optionally `async`/`export`) declaration
@@ -228,7 +228,24 @@ function injectTemplateImports(code: string): string {
 
   const lines = code.split('\n');
   let idx = 0;
-  while (idx < lines.length && /^\s*import\s/.test(lines[idx])) idx++;
+  let inMultilineImport = false;
+  while (idx < lines.length) {
+    const line = lines[idx];
+    if (inMultilineImport) {
+      idx++;
+      if (/^\s*\}/.test(line) || /from\s+['"]/.test(line)) inMultilineImport = false;
+      continue;
+    }
+    if (/^\s*import\s/.test(line)) {
+      // Detect multi-line import: opening { but no closing } on the same line
+      if (/\{[^}]*$/.test(line) && !/from\s+['"]/.test(line)) {
+        inMultilineImport = true;
+      }
+      idx++;
+      continue;
+    }
+    break;
+  }
   lines.splice(idx, 0, ...inserts);
   return lines.join('\n');
 }

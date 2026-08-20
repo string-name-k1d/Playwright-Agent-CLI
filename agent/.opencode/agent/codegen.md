@@ -1,6 +1,7 @@
 ---
 description: Headless code generator used by the pwcli generate/plan/test-heal commands. Answers directly with only the requested output and never uses tools.
 mode: primary
+variant: minimal
 permission:
   bash: deny
   read: deny

@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { isSiteAdapterName, resolveSiteAdapter, type SiteAdapterName } from './lib/site-adapter.js';
 
 export interface Config {
   /*! Url for  target website */
@@ -15,6 +16,8 @@ export interface Config {
   apiBaseUrl?: string;
   /*! Request timeout (ms) for the api backend */
   apiTimeout?: number;
+  /*! Site behavior adapter: generic (default) or drupal */
+  siteAdapter?: SiteAdapterName;
   outputDir: string;
   playwrightCliPath: string;
   opencodePath: string;
@@ -34,6 +37,7 @@ const DEFAULT_CONFIG: Config = {
   headed: false,
   snapshotDepth: 4,
   maxRetries: 3,
+  siteAdapter: 'generic',
 };
 
 function findConfigFile(): string | null {
@@ -72,6 +76,14 @@ export function loadConfig(overridePath?: string): Config {
     const t = parseInt(process.env.AGENT_API_TIMEOUT, 10);
     if (!Number.isNaN(t)) envConfig.apiTimeout = t;
   }
+  if (process.env.PW_CLI_SITE_ADAPTER) {
+    const value = process.env.PW_CLI_SITE_ADAPTER.toLowerCase().trim();
+    if (!isSiteAdapterName(value)) {
+      console.error(`Error: PW_CLI_SITE_ADAPTER must be one of: generic, drupal (got: ${process.env.PW_CLI_SITE_ADAPTER})`);
+      process.exit(1);
+    }
+    envConfig.siteAdapter = value;
+  }
   if (process.env.TARGET_URL) envConfig.targetUrl = process.env.TARGET_URL;
   if (process.env.PW_CLI_HEADED) envConfig.headed = process.env.PW_CLI_HEADED === 'true';
   if (process.env.PW_CLI_OUTPUT_DIR) envConfig.outputDir = process.env.PW_CLI_OUTPUT_DIR;
@@ -103,6 +115,14 @@ export function resolveConfig(cliFlags: Partial<Config>, configPath?: string): C
   if (cliFlags.apiModel !== undefined) merged.apiModel = cliFlags.apiModel;
   if (cliFlags.apiBaseUrl !== undefined) merged.apiBaseUrl = cliFlags.apiBaseUrl;
   if (cliFlags.apiTimeout !== undefined) merged.apiTimeout = cliFlags.apiTimeout;
+  if (cliFlags.siteAdapter !== undefined) {
+    const value = String(cliFlags.siteAdapter).toLowerCase().trim();
+    if (!isSiteAdapterName(value)) {
+      console.error(`Error: --site-adapter must be one of: generic, drupal (got: ${cliFlags.siteAdapter})`);
+      process.exit(1);
+    }
+    merged.siteAdapter = value;
+  }
   if (cliFlags.outputDir !== undefined) merged.outputDir = cliFlags.outputDir;
   if (cliFlags.headed !== undefined) merged.headed = cliFlags.headed;
   if (cliFlags.snapshotDepth !== undefined) merged.snapshotDepth = cliFlags.snapshotDepth;
@@ -111,6 +131,11 @@ export function resolveConfig(cliFlags: Partial<Config>, configPath?: string): C
   if (cliFlags.basicAuthUser !== undefined) merged.basicAuthUser = cliFlags.basicAuthUser;
   if (cliFlags.basicAuthPass !== undefined) merged.basicAuthPass = cliFlags.basicAuthPass;
 
+  if (merged.siteAdapter && !isSiteAdapterName(String(merged.siteAdapter).toLowerCase().trim())) {
+    console.error(`Error: siteAdapter in config must be one of: generic, drupal (got: ${merged.siteAdapter})`);
+    process.exit(1);
+  }
+  merged.siteAdapter = resolveSiteAdapter(merged.siteAdapter);
   return merged;
 }
 

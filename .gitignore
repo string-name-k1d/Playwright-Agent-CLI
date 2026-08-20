@@ -42,6 +42,10 @@ auth-profile-builder/
 # Run screenshots (also bundled into the archives/)
 autorun-screenshots/
 
+# Site-specific test archives and prompts (large, site-specific artifacts)
+archives/
+prompts/
+
 # OS files
 Thumbs.db
 Desktop.ini

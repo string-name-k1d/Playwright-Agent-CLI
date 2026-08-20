@@ -1,11 +1,13 @@
 # Playwright Agent CLI (`pwcli`)
 
-An end-to-end web-testing agent: it **explores** a website, **plans** test cases,
+An playwright-cli based end-to-end web-testing agent: it **explores** a website, **plans** test cases,
 **generates** Playwright specs, **executes** them, and **heals** failures using
 an AI agent backend — the `opencode` CLI by default, or any OpenAI-compatible
 chat-completions API. Browser automation runs through Playwright's
-Node.js API directly (in-process) — no subprocess calls — which makes runs
-deterministic and repeatable while keeping AI usage (and token spend) minimal.
+Node.js API directly (in-process) for page actions/snapshots; some pipeline
+stages (for example `npx playwright test`, `opencode run`, and optional `drush`)
+run as subprocesses. This keeps browser-state handling deterministic while
+keeping AI usage (and token spend) minimal.
 
 - Full command reference: [COMMANDS.md](COMMANDS.md)
 - Invocation: `pwcli` and `pw-cli` are shell aliases for `node dist/index.js`
@@ -14,30 +16,32 @@ deterministic and repeatable while keeping AI usage (and token spend) minimal.
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Setup](#setup)
-  - [Run with Docker](#run-with-docker)
-  - [Configuration](#configuration)
-  - [Environment Variables](#environment-variables)
-  - [AI Agent Backends](#ai-agent-backends)
-  - [First-time login & verify](#first-time-login--verify)
-- [Commands](#commands)
-  - [Command summary (flow order)](#command-summary-flow-order)
-  - [Notes on arguments](#notes-on-arguments)
-- [How the pipeline works](#how-the-pipeline-works)
-- [Screenshots](#screenshots)
-- [Natural Language Prompts](#natural-language-prompts)
-- [Site knowledge](#site-knowledge)
-  - [Explore Registry](#explore-registry)
-  - [Website Profiles & Site Map](#website-profiles--site-map)
-  - [Site Profile](#site-profile)
-- [User References](#user-references)
-- [Locator Rules](#locator-rules)
-- [Accessibility Tree Limitations (CDP)](#accessibility-tree-limitations-cdp)
-- [Docker & OpenCode connection](#docker--opencode-connection)
-- [Architecture](#architecture)
-- [File Structure](#file-structure)
-- [References](#references)
+- [Playwright Agent CLI (`pwcli`)](#playwright-agent-cli-pwcli)
+  - [Table of Contents](#table-of-contents)
+  - [Overview](#overview)
+  - [Setup](#setup)
+    - [Run with Docker](#run-with-docker)
+    - [Configuration](#configuration)
+    - [Environment Variables](#environment-variables)
+    - [AI Agent Backends](#ai-agent-backends)
+    - [First-time login \& verify](#first-time-login--verify)
+  - [Commands](#commands)
+    - [Command summary (flow order)](#command-summary-flow-order)
+    - [Notes on arguments](#notes-on-arguments)
+  - [How the pipeline works](#how-the-pipeline-works)
+  - [Screenshots](#screenshots)
+  - [Natural Language Prompts](#natural-language-prompts)
+  - [Site knowledge](#site-knowledge)
+    - [Explore Registry](#explore-registry)
+    - [Website Profiles \& Site Map](#website-profiles--site-map)
+    - [Site Profile](#site-profile)
+  - [User References](#user-references)
+  - [Locator Rules](#locator-rules)
+  - [Accessibility Tree Limitations (CDP)](#accessibility-tree-limitations-cdp)
+  - [Docker \& OpenCode connection](#docker--opencode-connection)
+  - [Architecture](#architecture)
+  - [File Structure](#file-structure)
+  - [References](#references)
 
 ## Overview
 
@@ -54,41 +58,6 @@ Manual:  explore → plan → generate → test → report
                                 ↘ heal ↗
 
 Autorun: explore → plan → [generate → test → heal → generate] → loop until all pass
-```
-
-```mermaid
----
-config:
-  theme: redux
-  layout: fixed
----
-flowchart TB
-    n4["Explore"] --> n1["Planner"]
-    n6["Prompt"] --> n1
-    n1 --> n2["Generator"]
-    n2 --> n3["Healer"]
-    n3 --> n10["Success?"]
-    n10 --> n11["Report"] & n1
-    n5["Site Map"]
-    n7["NL Description of testing task (with batch processing)"]
-    n8["Test Cases (.md)"]
-    n9["Test Files (.spec.js)"]
-    n12["Success/<br>Fault unfixable"]
-    n13["Fail"]
-
-    n4@{ shape: rect}
-    n1@{ shape: rect}
-    n6@{ shape: rect}
-    n2@{ shape: rect}
-    n3@{ shape: rect}
-    n10@{ shape: diam}
-    n11@{ shape: rounded}
-    n5@{ shape: text}
-    n7@{ shape: text}
-    n8@{ shape: text}
-    n9@{ shape: text}
-    n12@{ shape: text}
-    n13@{ shape: text}
 ```
 
 **Why not MCP?** A deterministic CLI produces more repeatable tests while
@@ -132,6 +101,7 @@ Create `pw-cli-agent.config.json` in the project root or
   "apiModel": "gpt-4o",
   "apiBaseUrl": "https://api.openai.com/v1",
   "apiTimeout": 300000,
+  "siteAdapter": "generic",
   "outputDir": "./artifacts",
   "headed": false,
   "snapshotDepth": 4,
@@ -157,9 +127,16 @@ Precedence: **CLI flags > env vars > config file > defaults.**
 | `AGENT_API_MODEL` | Default model for the **api** backend (e.g. `gpt-4o` via OpenAI, `claude-sonnet-4-6`/`anthropic/claude-...` via OpenRouter) |
 | `AGENT_API_TIMEOUT` | Request timeout (ms) for the **api** backend (default: `300000`) |
 | `PW_CLI_HEADED` | Run browsers headed by default (`true`/`false`) |
+| `PW_CLI_SITE_ADAPTER` | Site adapter: `generic` (default) or `drupal` (enables Drupal-specific reveal/add behavior) |
 | `PW_CLI_OUTPUT_DIR` | Custom artifacts directory |
 | `STORAGE_STATE` | Default browser profile path for saved login state |
 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | HTTP Basic Auth credentials for sites behind an nginx auth gate |
+| `PW_CLI_PLAN_MAX_PROMPT_CHARS` | Planner prompt/context max characters (default: `180000`) |
+| `PW_CLI_PLAN_MAX_REFERENCE_CHARS` | Planner reference payload max characters (default: `40000`) |
+| `PW_CLI_PLAN_MAX_SNAPSHOTS` | Max snapshots included per planning call (default: `3`) |
+| `PW_CLI_GENERATE_MAX_PROMPT_CHARS` | Generator prompt max characters (default: `180000`) |
+| `PW_CLI_GENERATE_MAX_REFERENCE_CHARS` | Generator reference payload max characters (default: `50000`) |
+| `PW_CLI_CODEGEN_REFERENCE_MAX_FILES` | Max codegen reference files inlined per generation call (default: `3`) |
 
 All of these can be set in `.env` (copied from `.env.example`); `docker-compose`
 loads it automatically. Never commit real `.env` values — `.env` and
@@ -210,14 +187,14 @@ Notes:
 ### First-time login & verify
 
 ```bash
-# Log in via a Drush one-time link (default: admin), saves ./auth-profile
-node dist/index.js login --url http://mtpc_test
+# Log in via a Drush one-time link, saves ./auth-profile
+node dist/index.js login --url https://example.com --user admin --drush-cmd "docker exec my_drupal drush"
 
 # Or reuse an existing host-browser login behind SSO (CAS/Shibboleth/2FA)
 node dist/index.js import-session --capture --url https://your-site.example
 
 # Verify the session is authenticated for the site
-node dist/index.js check --url http://mtpc_test
+node dist/index.js check --url https://example.com
 ```
 
 After login, all browser commands auto-detect `./auth-profile` — no `--profile`
@@ -236,7 +213,7 @@ in a loop. Setup commands (`check`, `login`, `import-session`) come first.
 | Command | Description | Key Options |
 |---------|-------------|-------------|
 | `check` | Verify environment and connectivity | `--url`, `--screenshot`, `--profile` |
-| `login` | Log in via Drush ULI, save browser profile | `--url`, `--user`, `--uli`, `--drush-cmd`, `--profile` |
+| `login` | Log in via Drush ULI, save browser profile | `--url`, `--user`, `--uli`, `--drush-cmd` (required with `--user`), `--profile` |
 | `import-session` | Reuse a host-browser login (cookies import / noVNC capture) | `--cookies`, `--capture`, `--url`, `--profile` |
 | `explore` | Navigate, capture snapshot (registry + per-site profile) | `--url`, `--depth`, `--screenshot`, `--headed`, `--expanded`, `--guide`, `--repl`, `--profile` |
 | `profile` | Inspect per-site profiles / registry / refs / site map | `tree`, `query`, `ref`, `pages`, `ls`, `map` |
@@ -244,7 +221,7 @@ in a loop. Setup commands (`check`, `login`, `import-session`) come first.
 | `generate` | Generate spec files from plans (extract / AI generation / codegen; batched) | `--plan`, `--extract`, `--codegen`, `--url`, `--profile`, `--reference`, `--batch-size` |
 | `test` | Execute Playwright test files (dependency-ordered waves) | `--execute`, `--url`, `--headed`, `--retries`, `--workers`, `--profile` |
 | `ui` | Interactive Playwright UI test runner (panel on `8123`) | `--execute`, `--url`, `--profile`, `--ui-host`, `--ui-port` |
-| `report` | Aggregate artifacts into a summary report | `--format`, `--output` |
+| `report` | Aggregate artifacts into a summary report (`md`, `html`, or `json`) | `--format`, `--output` |
 | `heal` | Re-explore failures, generate corrected plan (keeps passing tests) | `--url`, `--model`, `--headed`, `--profile` |
 | `autorun` | Full loop: explore → [codegen] → plan → generate → test → heal → generate | `--url`, `--headed`, `--prompt`, `--max-iterations`, `--resume`, `--profile`, `--codegen`, `--batch-size` |
 | `repl` | Interactive REPL session | — |
@@ -494,9 +471,38 @@ agent/
         └── prompt-templates.ts       # Reusable prompt templates for the AI agent
 ```
 
+## Recent Improvements
+
+### Form helpers & auto-import
+
+- `publishPage` and `addBlock` are now auto-imported in generated test files
+  (`FORM_HELPERS_IMPORT` / `HELPER_NAMES` in `artifacts.ts`).
+- `addBlock`'s `labelText` parameter is optional — when omitted the block is
+  added without an assertion (useful when the label is hard to predict).
+- `injectTemplateImports` correctly handles multi-line `import { ... }`
+  statements when injecting shared-helper imports.
+
+### Generator & healer prompts
+
+- `generator.md` recommends `publishPage(page)` over raw
+  `clickButton(page, 'Publish Page')` + `waitForURL`, which breaks on
+  pathauto alias redirects. The old pattern is explicitly forbidden.
+- `healer.md` preserves `publishPage` and `addBlock` imports and uses
+  `publishPage()` instead of `waitForURL`.
+
+### Generation budget
+
+- `DEFAULT_BATCH_SIZE` reduced from 5 to 3 — reasoning models occasionally
+  emit no code when the output-token budget is exhausted by internal
+  deliberation; smaller batches keep per-batch prompts short.
+- Generator prompts capped at 180 K chars, codegen references capped at
+  3 files / 50 K chars (`prompt-budget.ts`).
+- Codegen agent uses `variant: minimal` to reduce reasoning-token
+  consumption for reasoning models.
+
 ## References
 
-- [playwright-cli](https://playwright.dev/agent-cli/) — Playwright CLI for coding agents
+- [playwright-cli](https://playwright.dev/agent-cli/introduction) — Playwright CLI for coding agents
 - [opencode](https://opencode.ai) — AI coding agent for the terminal
 - [auto_playwright](https://github.com/ohanedan/playwright-testgen) — Original explore/plan/test/report workflow inspiration
 - [commander.js](https://github.com/tj/commander.js) — CLI framework

@@ -21,7 +21,7 @@ Respond with:
 
 RULES:
 - Return the FULL, corrected test file content in one fenced code block (the system extracts it from the first ```ts fence).
-- Keep the shared-helper import at the top unchanged: `import { revealButton, clickButton, addSection, openAdvancedOptions, expectBlockLabel } from '../../templates/form-helpers';` — do NOT redefine the helpers, do NOT import a screenshot-hook module, and do NOT add your own `test.afterEach` (keep the inline screenshot hook that is already present in the file).
+- Keep the shared-helper import at the top unchanged: `import { revealButton, clickButton, addSection, openAdvancedOptions, expectBlockLabel, publishPage, addBlock } from '../../templates/form-helpers';` — do NOT redefine the helpers, do NOT import a screenshot-hook module, and do NOT add your own `test.afterEach` (keep the inline screenshot hook that is already present in the file).
 - Keep all existing tests intact; fix only what is broken (locator, missing reveal step, timing, assertion).
 - For hidden buttons, add the correct reveal step using the shared helpers.
-- If a content-submission test fails before clicking the submit/publish button, ensure it ends with `clickButton(page, 'Publish Page')` and asserts the success state.
+- If a content-submission test fails before clicking the submit/publish button, ensure it ends with `await publishPage(page)` (which handles alias URL redirects and returns the node ID) and asserts the success state. NEVER use `await page.waitForURL(/\/node\/\d+/)` — use `publishPage()` instead.

@@ -19,7 +19,13 @@
     "clean": "node dist/index.js clean",
     "import-session": "node dist/index.js import-session"
   },
-  "keywords": ["playwright", "testing", "opencode", "e2e", "cli"],
+  "keywords": [
+    "playwright",
+    "testing",
+    "opencode",
+    "e2e",
+    "cli"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {

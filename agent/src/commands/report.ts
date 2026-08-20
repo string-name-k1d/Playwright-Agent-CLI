@@ -5,7 +5,7 @@ import { saveReport, ensureArtifactsDir, listArtifacts } from '../lib/artifacts.
 import { Config } from '../config.js';
 
 export interface ReportOptions {
-  format?: 'md' | 'html';
+  format?: 'md' | 'html' | 'json';
   output?: string;
   config: Config;
 }
@@ -106,15 +106,39 @@ ${body}
 </html>`;
 }
 
+function generateJsonReport(baseDir: string): string {
+  const plans = listArtifacts('plans', baseDir);
+  const tests = listArtifacts('tests', baseDir);
+  const explore = listArtifacts('explore', baseDir);
+  const report = {
+    schemaVersion: 'report-v1',
+    generatedAt: new Date().toISOString(),
+    artifacts: {
+      plans: plans.map((f) => ({ file: f })),
+      tests: tests.map((f) => ({ file: f })),
+      explore: explore.map((f) => ({ file: f })),
+    },
+    summary: {
+      planCount: plans.length,
+      testCount: tests.length,
+      exploreCount: explore.length,
+    },
+  };
+  return JSON.stringify(report, null, 2);
+}
+
 export async function reportCommand(opts: ReportOptions): Promise<void> {
   ensureArtifactsDir(opts.config.outputDir);
 
   const format = opts.format ?? 'md';
-  const filename = opts.output ?? `report-${Date.now()}.${format}`;
+  const ext = format === 'json' ? 'json' : format;
+  const filename = opts.output ?? `report-${Date.now()}.${ext}`;
 
   const content = format === 'html'
     ? generateHtmlReport(opts.config.outputDir)
-    : generateMarkdownReport(opts.config.outputDir);
+    : format === 'json'
+      ? generateJsonReport(opts.config.outputDir)
+      : generateMarkdownReport(opts.config.outputDir);
 
   const savedPath = saveReport(content, filename, opts.config.outputDir);
   console.log(chalk.green(`Report saved: ${savedPath}`));

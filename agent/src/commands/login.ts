@@ -71,7 +71,12 @@ export async function loginCommand(opts: LoginOptions): Promise<void> {
     loginUrl = rewriteUliHost(opts.uli, targetUrl);
     console.log(chalk.cyan(`Using provided ULI: ${loginUrl}`));
   } else if (opts.user) {
-    const drushCmd = opts.drushCmd ?? 'docker exec mtpc_test drush';
+    const drushCmd = opts.drushCmd?.trim();
+    if (!drushCmd) {
+      console.error(chalk.red('Error: --drush-cmd is required when using --user'));
+      console.error(chalk.gray('Example: --drush-cmd "docker exec <container> drush"'));
+      process.exit(1);
+    }
     console.log(chalk.cyan(`Generating one-time login for user: ${opts.user}`));
     const rawUli = await generateUli(targetUrl, opts.user, drushCmd);
     loginUrl = rewriteUliHost(rawUli, targetUrl);

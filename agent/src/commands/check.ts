@@ -60,6 +60,7 @@ export async function checkCommand(opts: CheckOptions): Promise<void> {
       await session.launch(opts.url, {
         profile,
         headless: !(opts.config?.headed ?? false),
+        siteAdapter: opts.config?.siteAdapter,
         ...(creds ? { httpCredentials: creds } : {}),
       });
       const info = await session.getPageInfo();

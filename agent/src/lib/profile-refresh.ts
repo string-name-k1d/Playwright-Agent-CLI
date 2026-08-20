@@ -43,6 +43,7 @@ export async function refreshWebsiteProfile(opts: ProfileRefreshOptions): Promis
     await session.launch(opts.url, {
       profile: opts.profile,
       headless: !(opts.headed ?? opts.config.headed),
+      siteAdapter: opts.config.siteAdapter,
     });
 
     // Collect node URLs from the content administration listing.

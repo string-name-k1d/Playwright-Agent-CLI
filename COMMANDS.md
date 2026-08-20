@@ -42,7 +42,7 @@ in a loop). Setup commands (`check`, `login`, `import-session`) come first.
 | Command | Description | Key Options |
 |---------|-------------|-------------|
 | `check` | Verify environment and connectivity | `--url`, `--screenshot`, `--profile` |
-| `login` | Log in via Drush ULI, save browser profile | `--url`, `--user`, `--uli`, `--drush-cmd`, `--profile` |
+| `login` | Log in via Drush ULI, save browser profile | `--url`, `--user`, `--uli`, `--drush-cmd` (required with `--user`), `--profile` |
 | `import-session` | Reuse a host-browser login: import exported cookies or capture via noVNC | `--cookies`, `--capture`, `--url`, `--profile` |
 | `explore` | Open browser, navigate, capture snapshot (registers in explore registry + per-site profile) | `--url`, `--depth`, `--screenshot`, `--headed`, `--expanded`, `--guide`, `--repl`, `--profile` |
 | `profile` | Inspect per-site profiles: element trees, registry queries, refs, pages, site map | `tree <url>`, `query <q> [url]`, `ref <eN> [url]`, `pages [url]`, `ls`, `map [url]` |
@@ -50,7 +50,7 @@ in a loop). Setup commands (`check`, `login`, `import-session`) come first.
 | `generate` | Generate test files from plans (extract / AI generation / interactive codegen with `[eN]` ref annotation; batched generation) | `--plan`, `--extract`, `--codegen`, `--url`, `--headed`, `--profile`, `--reference`, `--batch-size` |
 | `test` | Execute Playwright test files | `--execute`, `--url`, `--headed`, `--retries`, `--workers`, `--profile` |
 | `ui` | Run the interactive Playwright UI test runner (headed, panel served on `8123`) | `--execute`, `--url`, `--profile`, `--ui-host`, `--ui-port` |
-| `report` | Aggregate artifacts into summary report | `--format`, `--output` |
+| `report` | Aggregate artifacts into summary report (`md`, `html`, `json`) | `--format`, `--output` |
 | `heal` | Re-explore failures (element-not-found aware), generate corrected plan (preserves passing tests) | `--url`, `--model`, `--headed`, `--profile` |
 | `autorun` | Loop: explore → [codegen] → plan → generate → test → heal → generate (dependency-ordered parallel tests; planner uses site map + codegen reference) | `--url`, `--headed`, `--prompt`, `--prompt-file`, `--max-iterations`, `--resume`, `--profile`, `--codegen [file]`, `--batch-size` |
 | `repl` | Start interactive REPL session | — |
@@ -68,7 +68,16 @@ in a loop). Setup commands (`check`, `login`, `import-session`) come first.
 - Numeric options (`--depth`, `--retries`, `--workers`, `--max-iterations`, `--keep-autorun`, `--keep-runs`, `--ui-port`) must be non-negative integers.
 - `--resume <runId>` must point to an existing `artifacts/results/autorun-<runId>` directory.
 - The global `--config <path>` must point to an existing file.
+- The global `--site-adapter <generic|drupal>` selects generic vs Drupal-specific browsing behavior.
 - Glob patterns (e.g. `tests/*.spec.ts`) are accepted for `--execute` without an existence check.
+
+**Prompt budgets (env):**
+- `PW_CLI_PLAN_MAX_PROMPT_CHARS` (default `180000`)
+- `PW_CLI_PLAN_MAX_REFERENCE_CHARS` (default `40000`)
+- `PW_CLI_PLAN_MAX_SNAPSHOTS` (default `3`)
+- `PW_CLI_GENERATE_MAX_PROMPT_CHARS` (default `180000`)
+- `PW_CLI_GENERATE_MAX_REFERENCE_CHARS` (default `50000`)
+- `PW_CLI_CODEGEN_REFERENCE_MAX_FILES` (default `3`)
 
 ---
 
@@ -108,35 +117,35 @@ If `./auth-profile` exists (created by `login` or `import-session`), it is autom
 Log in via Drush one-time login link (ULI) and save browser session for reuse. Runs `drush uli` to generate a one-time login URL, opens a browser with the Playwright API directly, authenticates, and saves both a Chromium profile directory (for `explore`) and a `storageState` JSON file (for tests).
 
 ```bash
-# Login as admin (default) via Drush in the mtpc_test container
-pwcli login --url http://mtpc_test
+# Login as admin via Drush (explicit drush command required with --user)
+pwcli login --url https://example.com --user admin --drush-cmd "docker exec my_drupal drush"
 
 # Login as specific user
-pwcli login --url http://mtpc_test --user admin
+pwcli login --url https://example.com --user admin --drush-cmd "drush"
 
 # Use a direct one-time login URL (skip drush generation)
-pwcli login --url http://mtpc_test --uli "http://mtpc_test/user/reset/1/12345678/login"
+pwcli login --url https://example.com --uli "https://example.com/user/reset/1/12345678/login"
 
 # Custom drush command (e.g., local drush or different container)
-pwcli login --url http://mtpc_test --drush-cmd "docker exec my_drupal drush"
+pwcli login --url https://example.com --user admin --drush-cmd "docker exec my_drupal drush"
 
 # Save to custom profile path
-pwcli login --url http://mtpc_test --profile ./my-session
+pwcli login --url https://example.com --profile ./my-session
 
 # Headed mode (see the browser)
-pwcli login --url http://mtpc_test --headed
+pwcli login --url https://example.com --headed
 ```
 
 **Options:**
 - `--url <url>` — target URL (falls back to `TARGET_URL`)
 - `--user <user>` — Drupal username (default: `admin`)
 - `--uli <url>` — direct one-time login URL (skips drush generation)
-- `--drush-cmd <cmd>` — drush command prefix (default: `docker exec mtpc_test drush`)
+- `--drush-cmd <cmd>` — drush command prefix (**required when using `--user`**)
 - `--headed` — show browser window
 - `--profile <path>` — browser profile directory to save (default: `./auth-profile`)
 
 **How it works:**
-1. Generates ULI via `drush uli admin --uri=http://mtpc_test --no-browser`
+1. Generates ULI via `drush uli admin --uri=<target-url> --no-browser`
 2. Launches Chromium via `chromium.launchPersistentContext(auth-profile/)` — saves cookies to the Chromium profile directory
 3. Navigates to the ULI URL — auto-authenticates via one-time login token
 4. Saves `auth-profile/state.json` via `context.storageState()` — Playwright-compatible JSON with cookies + localStorage
@@ -525,10 +534,11 @@ Aggregate artifacts into a summary report. The report opens with a **Contents** 
 ```bash
 pwcli report
 pwcli report --format html --output ./report.html
+pwcli report --format json --output ./report.json
 ```
 
 **Options:**
-- `--format <md|html>` — output format (default: md)
+- `--format <md|html|json>` — output format (default: md). `json` uses schema version `report-v1`
 - `--output <file>` — custom output path
 
 ### `heal`

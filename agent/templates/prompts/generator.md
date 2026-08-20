@@ -77,20 +77,28 @@ GENERAL RULES:
 SHARED HELPERS AND SCREENSHOT HOOK (auto-injected — DO NOT redefine them):
 - The form helpers are imported for you automatically:
   ```ts
-  import { revealButton, clickButton, addSection, openAdvancedOptions, expectBlockLabel } from '../../templates/form-helpers';
+  import { revealButton, clickButton, addSection, openAdvancedOptions, expectBlockLabel, publishPage, addBlock } from '../../templates/form-helpers';
   ```
-- DO NOT define your own `revealButton`, `clickButton`, `addSection`, `openAdvancedOptions`, or `expectBlockLabel` functions — they are already available and would collide with the import.
+- DO NOT define your own `revealButton`, `clickButton`, `addSection`, `openAdvancedOptions`, `expectBlockLabel`, `publishPage`, or `addBlock` functions — they are already available and would collide with the import.
 - DO NOT add a `test.afterEach` hook and DO NOT import a screenshot-hook module — one inline `test.afterEach` screenshot hook is injected into your file. It captures a full-page screenshot (`<test_name>_pass.png` on pass, `_fail.png` otherwise) after every test. Your test just ends; the hook does the rest.
 - Use the helpers directly in your tests:
   - `await clickButton(page, 'Add 1-Column Section')` — reveals hidden buttons via "List additional actions" first, then clicks.
   - `await addSection(page, '1-Column')` — clicks "Add 1-Column Section" and waits for the ajax re-render.
   - `await openAdvancedOptions(page)` — opens every unselected "Advanced Options" tab.
   - `await expectBlockLabel(page, 'Text')` — asserts a section/block's `.paragraph-type-label` (reliable "was added" signal).
+  - `await publishPage(page)` — clicks "Publish Page", waits for redirect (handles alias URLs), returns node ID string.
+  - `await addBlock(page, 'Add Text Area Block', 'Text Area')` — clicks a block add button with retry, waits for the block label to appear.
 
 END-OF-TEST PUBLISH (CRITICAL):
-- For any test case that fills a content-add/edit form and submits it, END the test by clicking the form's primary submit/publish button and asserting the success state, so the page is actually created/published on the site:
-  - `await clickButton(page, 'Publish Page')` (prefer the labeled publish/submit button from the snapshot, e.g. "Publish Page"); fall back to the form's primary action button (e.g. "Save") only if no publish-labeled button exists.
-  - Then assert the outcome: redirect to the created node URL (`await page.waitForURL(/\/node\/\d+/)`) or a status/success message (`page.locator('.messages--status, [role="status"]')`).
+- For any test case that fills a content-add/edit form and submits it, END the test by calling `await publishPage(page)`. This helper clicks "Publish Page", waits for the redirect (including Drupal pathauto alias URLs like `/my-page` instead of `/node/123`), and returns the node ID string.
+- Example:
+  ```ts
+  const nodeId = await publishPage(page);
+  expect(nodeId).toBeTruthy();
+  // Optionally visit the node via the numeric URL:
+  // await page.goto('/node/' + nodeId);
+  ```
+- NEVER use `await page.waitForURL(/\/node\/\d+/)` after publishing — Drupal redirects to pathauto aliases, not `/node/N`, so this pattern always times out.
 - Do NOT skip the submit/publish step when the test case's Expected states the page is created/submitted — an un-submitted form means the test verified nothing end-to-end.
 - For tests that only inspect form fields (no submission expected), it is fine to end after the assertions — the screenshot hook still captures the form state.
 
