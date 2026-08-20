@@ -33,6 +33,7 @@ interface AutorunState {
   planPath?: string;
   testFiles: string[];
   batchSize?: number;
+  platform?: string;
   allPassed: boolean;
   exploredUrls: string[];
   startedAt: string;
@@ -90,9 +91,9 @@ async function doExplore(url: string, headed: boolean, config: Config, profile?:
   return snap;
 }
 
-async function doPlan(snapshotPath: string, url: string, config: Config, prompt?: string, promptFile?: string, codegenPath?: string): Promise<string> {
+async function doPlan(snapshotPath: string, url: string, config: Config, prompt?: string, promptFile?: string, codegenPath?: string, platform?: string): Promise<string> {
   step('Plan');
-  await planCommand({ snapshot: snapshotPath, url, prompt, promptFile, codegenFile: codegenPath, config });
+  await planCommand({ snapshot: snapshotPath, url, prompt, promptFile, codegenFile: codegenPath, config, platform });
   const plan = getLatestFile('plans', config.outputDir);
   if (!plan) throw new Error('No plan produced');
   substep(`Plan: ${plan}`);
@@ -114,7 +115,7 @@ async function doCodegen(url: string, config: Config, profile?: string): Promise
   return outputPath;
 }
 
-async function doGenerate(planPath: string, url: string | undefined, config: Config, codegenPath?: string, batchSize?: number): Promise<string[]> {
+async function doGenerate(planPath: string, url: string | undefined, config: Config, codegenPath?: string, batchSize?: number, platform?: string): Promise<string[]> {
   step('Generate');
   const planContent = readFileSync(planPath, 'utf-8');
 
@@ -123,7 +124,7 @@ async function doGenerate(planPath: string, url: string | undefined, config: Con
   // inlined as authoritative reference material for locators/interactions.
   if (codegenPath) {
     console.log(chalk.gray(`  Using existing codegen/exploration file as reference: ${codegenPath}`));
-    const files = await generateFromPlan(planContent, url, config, undefined, codegenPath, batchSize);
+    const files = await generateFromPlan(planContent, url, config, undefined, codegenPath, batchSize, platform);
     substep(`Generated ${files.length} test file(s)`);
     return files;
   }
@@ -141,7 +142,7 @@ async function doGenerate(planPath: string, url: string | undefined, config: Con
 
   // Fallback to AI generation
   console.log(chalk.yellow('No code blocks in plan — generating via AI...'));
-  const files = await generateFromPlan(planContent, url, config, undefined, undefined, batchSize);
+  const files = await generateFromPlan(planContent, url, config, undefined, undefined, batchSize, platform);
   substep(`Generated ${files.length} test file(s)`);
   return files;
 }
@@ -241,6 +242,7 @@ export interface AutorunOptions {
   profile?: string;
   codegen?: boolean | string;
   batchSize?: number;
+  platform?: string;
   config: Config;
 }
 
@@ -290,6 +292,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
       profile: opts.profile,
       codegen: opts.codegen,
       batchSize: opts.batchSize,
+      platform: opts.platform,
       testFiles: [],
       allPassed: false,
       exploredUrls: [],
@@ -302,6 +305,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
     console.log(chalk.gray(`  Model:  ${resolveAgentModel(opts.config) ?? 'default'}`));
     console.log(chalk.gray(`  Max iterations: ${state.maxIterations}`));
     if (state.batchSize) console.log(chalk.gray(`  Generation batch size: ${state.batchSize}`));
+    if (state.platform) console.log(chalk.gray(`  Platform: ${state.platform}`));
     if (state.codegen) console.log(chalk.gray(`  Codegen: ${typeof state.codegen === 'string' ? `use existing file as reference: ${state.codegen}` : 'record a flow (ref-annotated) before planning'}`));
   }
 
@@ -390,7 +394,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
         }
         state.planPath = await doPlan(
           state.snapshotPath, state.url, config,
-          state.prompt, state.promptFile, state.codegenPath
+          state.prompt, state.promptFile, state.codegenPath, state.platform
         );
         state.step = 'generate';
         saveState(state);
@@ -402,7 +406,7 @@ export async function autorunCommand(opts: AutorunOptions): Promise<void> {
           console.error(chalk.red('No plan path — cannot generate'));
           break;
         }
-        state.testFiles = await doGenerate(state.planPath, state.url, config, state.codegenPath, state.batchSize);
+        state.testFiles = await doGenerate(state.planPath, state.url, config, state.codegenPath, state.batchSize, state.platform);
         if (state.testFiles.length === 0) {
           console.error(chalk.red('No test files produced — aborting'));
           break;

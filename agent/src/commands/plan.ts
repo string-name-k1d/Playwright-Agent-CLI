@@ -89,6 +89,7 @@ export interface PlanOptions {
   explore?: boolean;
   reference?: string;
   codegenFile?: string;
+  platform?: string;
   config: Config;
 }
 
@@ -394,10 +395,14 @@ async function generatePlan(
 
   const context = truncateForPrompt(contextParts.join('\n\n'), PLAN_MAX_PROMPT_CHARS, 'planner context');
   const prompt = truncateForPrompt(
-    plannerPrompt(snapshots[0], context, requirements, referenceContent),
+    plannerPrompt(snapshots[0], context, requirements, referenceContent, opts.platform),
     PLAN_MAX_PROMPT_CHARS,
     'planner prompt',
   );
+
+  if (opts.platform) {
+    console.log(chalk.gray(`  Platform: ${opts.platform} (using planner-${opts.platform}.md template)`));
+  }
 
   const MAX_RETRIES = 2;
   let plan = '';

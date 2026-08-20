@@ -243,6 +243,7 @@ program
   .option('--search <query>', 'Search explore registry for matching records')
   .option('--explore', 'Also explore unvisited pages found in links')
   .option('--reference <path>', 'User test procedures/screenshots directory or file')
+  .option('--platform <platform>', 'Testing platform: plw (Playwright), cypress, selenium, etc. Loads platform-specific planner template and generator hints')
   .action(async (opts) => {
     const parent = program.opts();
     const config = resolveConfig({ opencodeModel: opts.model, siteAdapter: parent.siteAdapter }, parent.config);
@@ -260,6 +261,7 @@ program
       search: opts.search,
       explore: opts.explore,
       reference: opts.reference,
+      platform: opts.platform,
       config,
     });
   });
@@ -307,6 +309,7 @@ program
   .option('--profile <path>', 'Browser profile for auth state (auto-detects ./auth-profile)')
   .option('--reference <path>', 'User test procedures/screenshots directory or file')
   .option('--batch-size <N>', `Test cases per generation batch (default: ${DEFAULT_BATCH_SIZE}; 1 = single request)`, parseInt)
+  .option('--platform <platform>', 'Testing platform: plw (Playwright), cypress, selenium, etc. Loads platform-specific generator hints')
   .action(async (opts) => {
     const parent = program.opts();
     const config = resolveConfig({ headed: opts.headed, storageState: opts.profile, siteAdapter: parent.siteAdapter }, parent.config);
@@ -326,6 +329,7 @@ program
       profile: opts.profile,
       reference: opts.reference,
       batchSize,
+      platform: opts.platform,
       config,
     });
   });
@@ -378,6 +382,7 @@ program
   .option('--profile <path>', 'Persistent browser profile for saved login state')
   .option('--batch-size <N>', `Test cases per generation batch (default: ${DEFAULT_BATCH_SIZE})`, parseInt)
   .option('--codegen [file]', 'Record a one-time codegen flow (element-ref annotated) before planning, or pass an existing codegen/exploration file (e.g. --codegen ./artifacts/tests/codegen-xxx.spec.ts) to use as reference material')
+  .option('--platform <name>', 'Platform for generator hint (e.g. plw for Playwright)')
   .action(async (opts) => {
     const parent = program.opts();
     const config = resolveConfig({ headed: opts.headed, storageState: opts.profile, siteAdapter: parent.siteAdapter }, parent.config);
@@ -405,6 +410,7 @@ program
       profile: opts.profile,
       codegen: opts.codegen,
       batchSize,
+      platform: opts.platform,
       config,
     });
   });

@@ -52,7 +52,7 @@ in a loop). Setup commands (`check`, `login`, `import-session`) come first.
 | `ui` | Run the interactive Playwright UI test runner (headed, panel served on `8123`) | `--execute`, `--url`, `--profile`, `--ui-host`, `--ui-port` |
 | `report` | Aggregate artifacts into summary report (`md`, `html`, `json`) | `--format`, `--output` |
 | `heal` | Re-explore failures (element-not-found aware), generate corrected plan (preserves passing tests) | `--url`, `--model`, `--headed`, `--profile` |
-| `autorun` | Loop: explore → [codegen] → plan → generate → test → heal → generate (dependency-ordered parallel tests; planner uses site map + codegen reference) | `--url`, `--headed`, `--prompt`, `--prompt-file`, `--max-iterations`, `--resume`, `--profile`, `--codegen [file]`, `--batch-size` |
+| `autorun` | Loop: explore → [codegen] → plan → generate → test → heal → generate (dependency-ordered parallel tests; planner uses site map + codegen reference) | `--url`, `--headed`, `--prompt`, `--prompt-file`, `--max-iterations`, `--resume`, `--profile`, `--codegen [file]`, `--batch-size`, `--platform` |
 | `repl` | Start interactive REPL session | — |
 | `skill` | Generate opencode skill files | `--output-dir`, `--agents` |
 | `clean` | Remove scratch/temp files, prune old autorun/run result dirs | `--dry-run`, `--autorun`, `--runs`, `--keep-autorun`, `--keep-runs`, `--all` |
@@ -594,6 +594,9 @@ pwcli autorun --url https://example.com --codegen ./artifacts/tests/codegen-abc1
 # Generate tests in batches of 5 test cases per agent call
 pwcli autorun --url https://example.com --batch-size 5
 
+# With Playwright-specific code generation
+pwcli autorun --url https://example.com --platform plw
+
 # Resume an interrupted run
 pwcli autorun --resume abc1234
 ```
@@ -619,6 +622,7 @@ The loop repeats steps 4–7 until all tests pass or max iterations reached.
 - `--profile <path>` — browser profile for auth state (auto-detects `./auth-profile`)
 - `--codegen [file]` — record a one-time codegen flow before planning, or pass an existing codegen/exploration file (e.g. `--codegen ./artifacts/tests/codegen-abc123.spec.ts`) to use as reference material instead
 - `--batch-size <N>` — test cases generated per agent call during the generate step (default `5`; `1` = single request). See [generate](#generate) for details.
+- `--platform <name>` — platform for generator hint (e.g. `plw` for Playwright-specific code generation)
 
 State saved to `./artifacts/results/autorun-<runId>/state.json`.
 

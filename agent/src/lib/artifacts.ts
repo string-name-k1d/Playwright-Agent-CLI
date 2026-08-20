@@ -399,11 +399,19 @@ export function isValidPlan(text: string): { valid: boolean; score: number; reas
   // ── Fenced code blocks with test content ──
   const codeBlocks = text.match(/```[\s\S]*?```/g) ?? [];
   const testCodeBlocks = codeBlocks.filter(b => /test\s*\(|expect\s*\(|page\.(goto|click|fill|getBy)/.test(b));
-  score += Math.min(testCodeBlocks.length * 3, 9);
+  if (testCodeBlocks.length > 0) {
+    score += Math.min(testCodeBlocks.length * 3, 9);
+  }
 
   // ── Numbered or bulleted test-case-like lists ──
   const testListItems = (text.match(/(?:^|\n)\s*(?:\d+\.|\-|\*)\s+.*(?:test|verify|check|assert|should|expect)/gi) ?? []).length;
   score += Math.min(testListItems, 4);
+
+  // ── Fallback: pure-NL plans with strong structure but no code blocks ──
+  //    (UPF plans have steps in natural language, no fenced code blocks)
+  if (testCodeBlocks.length === 0 && score >= 6) {
+    score += 3; // bonus for well-structured NL plans
+  }
 
   const valid = score >= 2;
   let reason = '';

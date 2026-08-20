@@ -1,6 +1,6 @@
-# Playwright Agent CLI (`pwcli`)
+# Playwright Agent CLI
 
-An playwright-cli based end-to-end web-testing agent: it **explores** a website, **plans** test cases,
+An playwright-cli (`pwcli`) based end-to-end web-testing agent: it **explores** a website, **plans** test cases,
 **generates** Playwright specs, **executes** them, and **heals** failures using
 an AI agent backend — the `opencode` CLI by default, or any OpenAI-compatible
 chat-completions API. Browser automation runs through Playwright's
@@ -14,9 +14,11 @@ keeping AI usage (and token spend) minimal.
   (defined in `.bash_aliases`, interactive shells). In scripts or
   non-interactive shells use `node dist/index.js <command>`.
 
+> Note: test plans are human readable & platform independent, feel free to use with different agentic testing tools or input human designed tests
+
 ## Table of Contents
 
-- [Playwright Agent CLI (`pwcli`)](#playwright-agent-cli-pwcli)
+- [Playwright Agent CLI](#playwright-agent-cli)
   - [Table of Contents](#table-of-contents)
   - [Overview](#overview)
   - [Setup](#setup)
@@ -31,6 +33,10 @@ keeping AI usage (and token spend) minimal.
   - [How the pipeline works](#how-the-pipeline-works)
   - [Screenshots](#screenshots)
   - [Natural Language Prompts](#natural-language-prompts)
+  - [Universal Plan Format](#universal-plan-format)
+    - [Plan Structure](#plan-structure)
+    - [Platform-Specific Templates](#platform-specific-templates)
+    - [Example Usage](#example-usage)
   - [Site knowledge](#site-knowledge)
     - [Explore Registry](#explore-registry)
     - [Website Profiles \& Site Map](#website-profiles--site-map)
@@ -41,6 +47,10 @@ keeping AI usage (and token spend) minimal.
   - [Docker \& OpenCode connection](#docker--opencode-connection)
   - [Architecture](#architecture)
   - [File Structure](#file-structure)
+  - [Recent Improvements](#recent-improvements)
+    - [Form helpers \& auto-import](#form-helpers--auto-import)
+    - [Generator \& healer prompts](#generator--healer-prompts)
+    - [Generation budget](#generation-budget)
   - [References](#references)
 
 ## Overview
@@ -217,13 +227,13 @@ in a loop. Setup commands (`check`, `login`, `import-session`) come first.
 | `import-session` | Reuse a host-browser login (cookies import / noVNC capture) | `--cookies`, `--capture`, `--url`, `--profile` |
 | `explore` | Navigate, capture snapshot (registry + per-site profile) | `--url`, `--depth`, `--screenshot`, `--headed`, `--expanded`, `--guide`, `--repl`, `--profile` |
 | `profile` | Inspect per-site profiles / registry / refs / site map | `tree`, `query`, `ref`, `pages`, `ls`, `map` |
-| `plan` | Generate test plan via AI agent (explore-plan mini-loop) | `--url`, `--snapshot`, `--prompt`, `--prompt-file`, `--model`, `--search`, `--explore`, `--reference` |
-| `generate` | Generate spec files from plans (extract / AI generation / codegen; batched) | `--plan`, `--extract`, `--codegen`, `--url`, `--profile`, `--reference`, `--batch-size` |
+| `plan` | Generate test plan via AI agent (explore-plan mini-loop) | `--url`, `--snapshot`, `--prompt`, `--prompt-file`, `--model`, `--search`, `--explore`, `--reference`, `--platform` |
+| `generate` | Generate spec files from plans (extract / AI generation / codegen; batched) | `--plan`, `--extract`, `--codegen`, `--url`, `--profile`, `--reference`, `--batch-size`, `--platform` |
 | `test` | Execute Playwright test files (dependency-ordered waves) | `--execute`, `--url`, `--headed`, `--retries`, `--workers`, `--profile` |
 | `ui` | Interactive Playwright UI test runner (panel on `8123`) | `--execute`, `--url`, `--profile`, `--ui-host`, `--ui-port` |
 | `report` | Aggregate artifacts into a summary report (`md`, `html`, or `json`) | `--format`, `--output` |
 | `heal` | Re-explore failures, generate corrected plan (keeps passing tests) | `--url`, `--model`, `--headed`, `--profile` |
-| `autorun` | Full loop: explore → [codegen] → plan → generate → test → heal → generate | `--url`, `--headed`, `--prompt`, `--max-iterations`, `--resume`, `--profile`, `--codegen`, `--batch-size` |
+| `autorun` | Full loop: explore → [codegen] → plan → generate → test → heal → generate | `--url`, `--headed`, `--prompt`, `--max-iterations`, `--resume`, `--profile`, `--codegen`, `--batch-size`, `--platform` |
 | `repl` | Interactive REPL session | — |
 | `skill` | Generate opencode skill files | `--output-dir`, `--agents` |
 | `clean` | Remove scratch/temp files, prune old run artifacts | `--dry-run`, `--autorun`, `--runs`, `--keep-autorun`, `--keep-runs`, `--all` |
@@ -269,6 +279,72 @@ pwcli plan --url https://example.com --prompt "Test the checkout flow: add items
 Or from a markdown file (`--prompt-file ./requirements.md`). The prompt can
 enumerate features, expected behaviors, and priority — the planner maps it to
 standalone test cases.
+
+## Universal Plan Format
+
+Plans are written in a platform-agnostic markdown format by default. Steps use
+natural language actions (Navigate, Click, Fill, Assert) — no code, no CSS
+selectors, no framework-specific syntax. This makes plans:
+
+- **Human-readable**: anyone can write or review plans without knowing Playwright
+- **Tool-agnostic**: the same plan can generate tests for Playwright, Cypress, etc.
+- **Manually executable**: QA engineers can follow the steps as a manual test script
+
+### Plan Structure
+
+```markdown
+## Objective
+<What this plan tests>
+
+## Pages
+- `/path` — <role in the plan>
+
+## Test Cases
+
+### TC-01: <kebab-name>
+**Priority:** high|medium|low
+**Dependencies:** standalone | depends: TC-N
+**Description:** <one line>
+**Steps:**
+1. Navigate to `/node/add/page`
+2. Fill "Title" with "Test Page"
+3. Click "Add Section"
+4. Click "Publish Page"
+**Expected:**
+- Page is created successfully
+- Title "Test Page" is displayed
+```
+
+### Platform-Specific Templates
+
+Use `--platform <name>` to load platform-specific planner templates and
+generator hints:
+
+| Flag | Planner Template | Generator Hint | Use Case |
+|------|-----------------|----------------|----------|
+| _(none)_ | `planner.md` (universal) | — | Generic plans, manual testing |
+| `--platform plw` | `planner-plw.md` | `generator-hint-plw.md` | Playwright-specific plans with locator hints |
+
+The `plw` (Playwright) template includes `getByRole()` hints, CSS selector
+rules, and Drupal-specific form mechanics. The universal template produces
+clean NL steps that the generator translates to platform code via LLM
+understanding.
+
+### Example Usage
+
+```bash
+# Generate a universal plan (default)
+pwcli plan --url https://example.com --prompt "Test the login flow"
+
+# Generate a Playwright-specific plan
+pwcli plan --url https://example.com --platform plw --prompt "Test the login flow"
+
+# Generate tests from a universal plan (generator uses LLM to translate NL steps)
+pwcli generate --plan plan-123.md
+
+# Generate tests with Playwright-specific hints
+pwcli generate --plan plan-123.md --platform plw
+```
 
 ## Site knowledge
 
@@ -469,6 +545,15 @@ agent/
         ├── profile-refresh.ts        # Profile/site-map refresh after explore runs
         ├── login-page.ts             # Login/SSO redirect detection
         └── prompt-templates.ts       # Reusable prompt templates for the AI agent
+└── templates/
+    └── prompts/
+        ├── planner.md                # Universal planner template (NL steps, platform-agnostic)
+        ├── planner-plw.md            # Playwright-specific planner (locator hints, CSS selectors)
+        ├── generator.md              # Generator base template (Playwright code generation)
+        ├── generator-hint-plw.md     # Playwright hint (NL→code mapping sample pair)
+        ├── explorer.md               # Explorer prompt
+        ├── healer.md                 # Single-test healer
+        └── healer-plan.md            # Multi-test healer plan
 ```
 
 ## Recent Improvements

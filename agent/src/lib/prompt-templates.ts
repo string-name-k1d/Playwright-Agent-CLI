@@ -23,6 +23,20 @@ function loadPrompt(name: string): string {
   return readFileSync(filePath, 'utf-8');
 }
 
+/**
+ * Loads a platform-specific hint template if it exists.
+ * Returns the hint content, or an empty string if no hint file is found.
+ */
+function loadPlatformHint(platform: string | undefined): string {
+  if (!platform) return '';
+  const hintName = `generator-hint-${platform}`;
+  try {
+    return loadPrompt(hintName);
+  } catch {
+    return '';
+  }
+}
+
 /** Replaces {{key}} placeholders in a template with the supplied values. */
 function fillPrompt(template: string, vars: Record<string, string>): string {
   let out = template;
@@ -54,7 +68,8 @@ export function plannerPrompt(
   snapshotContent: string,
   context?: string,
   requirements?: string,
-  referenceContent?: string
+  referenceContent?: string,
+  platform?: string
 ): string {
   const requirementsSection = requirements
     ? `\n\n## Requirements / Targets to Test (MANDATORY — COVER EVERY ITEM)\n${requirements}\n\nYour test plan MUST cover every requirement above. Map each requirement to at least one test case (TC-N).\n- If a requirement needs a page NOT in the snapshots below, add it to "## Pages to Explore" so the system explores it — do NOT skip or guess.\n- Prefer concrete, executable requirements over generic ones.`
@@ -66,7 +81,16 @@ export function plannerPrompt(
     ? `\n\nADDITIONAL CONTEXT (element maps, multi-page snapshots, site structure):\n${context}`
     : '';
 
-  return fillPrompt(loadPrompt('planner'), {
+  // Load platform-specific planner template if available, otherwise use default
+  const templateName = platform ? `planner-${platform}` : 'planner';
+  let template: string;
+  try {
+    template = loadPrompt(templateName);
+  } catch {
+    template = loadPrompt('planner');
+  }
+
+  return fillPrompt(template, {
     requirementsSection,
     referenceSection,
     snapshotContent,
@@ -89,7 +113,8 @@ export function generatorPrompt(
   planContent: string,
   context?: string,
   referenceContent?: string,
-  scopeNote?: string
+  scopeNote?: string,
+  platform?: string
 ): string {
   const contextSection = context ? `\n\nADDITIONAL CONTEXT:\n${context}` : '';
   const referenceSection = referenceContent
@@ -97,12 +122,16 @@ export function generatorPrompt(
     : '';
   const scopeSection = scopeNote ? `\n\nSCOPE:\n${scopeNote}\n` : '';
 
+  // Append platform-specific hint if available
+  const hint = loadPlatformHint(platform);
+  const hintSection = hint ? `\n\n${hint}` : '';
+
   return fillPrompt(loadPrompt('generator'), {
     testCases: planContent,
     contextSection,
     referenceSection,
     scopeSection,
-  });
+  }) + hintSection;
 }
 
 /**

@@ -232,6 +232,7 @@ async function runCommand(
           promptFile: extractFlag(args, '--prompt-file'),
           maxIterations: extractFlag(args, '--max-iterations') ? parseInt(extractFlag(args, '--max-iterations')!) : undefined,
           resume: extractFlag(args, '--resume'),
+          platform: extractFlag(args, '--platform'),
           config: { ...state.config },
         });
         break;

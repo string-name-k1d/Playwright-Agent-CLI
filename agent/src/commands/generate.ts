@@ -35,6 +35,7 @@ export interface GenerateOptions {
   profile?: string;
   reference?: string;
   batchSize?: number;
+  platform?: string;
   config: Config;
 }
 
@@ -48,7 +49,8 @@ export async function generateFromPlan(
   config: Config,
   referenceContent?: string,
   codegenFile?: string,
-  batchSize?: number
+  batchSize?: number,
+  platform?: string
 ): Promise<string[]> {
   console.log(chalk.cyan('Generating test code from plan...'));
 
@@ -85,7 +87,7 @@ export async function generateFromPlan(
           : ''
       }`;
       const prompt = truncateForPrompt(
-        generatorPrompt(subPlan, context, finalReference, note.trim()),
+        generatorPrompt(subPlan, context, finalReference, note.trim(), platform),
         GENERATE_MAX_PROMPT_CHARS,
         'generator prompt',
       );
@@ -438,7 +440,7 @@ export async function generateCommand(opts: GenerateOptions): Promise<GenerateRe
       console.log(chalk.yellow('No code blocks found in plan — falling back to AI generation\n'));
     }
 
-    const files = await generateFromPlan(planContent, opts.url, opts.config, referenceContent, undefined, opts.batchSize);
+    const files = await generateFromPlan(planContent, opts.url, opts.config, referenceContent, undefined, opts.batchSize, opts.platform);
     return { files };
   }
 
