@@ -103,7 +103,7 @@ export interface ExtractedCode {
 }
 
 const FORM_HELPERS_IMPORT =
-  "import { revealButton, clickButton, addSection, openAdvancedOptions, expectBlockLabel, publishPage, addBlock } from '../../templates/form-helpers';";
+  "import { revealButton, clickButton, addSection, openAdvancedOptions, expectBlockLabel, publishPage, addBlock, findButton, fillField } from '../../templates/form-helpers';";
 // The screenshot hook must be INLINE per spec file: a shared hook module does
 // not work when several spec files run in the same worker — Node caches the
 // module, so only the first file registers test.afterEach.
@@ -119,7 +119,7 @@ const SCREENSHOT_HOOK_SNIPPET = [
   "});",
   "",
 ].join('\n');
-const HELPER_NAMES = ['revealButton', 'clickButton', 'addSection', 'openAdvancedOptions', 'expectBlockLabel', 'publishPage', 'addBlock'] as const;
+const HELPER_NAMES = ['revealButton', 'clickButton', 'addSection', 'openAdvancedOptions', 'expectBlockLabel', 'publishPage', 'addBlock', 'findButton', 'fillField'] as const;
 
 /**
  * Removes a top-level `function <name>` (optionally `async`/`export`) declaration
